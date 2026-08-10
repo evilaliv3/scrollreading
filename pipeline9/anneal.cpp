@@ -480,7 +480,7 @@ void Anneal(AlignmentMap *am, std::map<int,Patch> *patches, std::vector<int> pat
 				#pragma omp critical(mutate_state)
 				{
 					//MutateState(localState, patchNums, badPatches, patchHeat, 15*(T/T0)*0+1, localRng);
-					MutateState(localState, patchNums, badPatches, patchHeat, 15*(T/T0)*0+1, localRng);
+					MutateState(localState, patchNums, badPatches, patchHeat, 15*(T/T0)+1, localRng);
 				}
 			}
 

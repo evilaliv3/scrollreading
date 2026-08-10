@@ -8,7 +8,7 @@
 #include "parameters.h"
 #include "common_types.h"
 
-float GetMaxDistance(std::vector<Vec3> &v)
+float GetMaxDistance(std::vector<std::pair<Vec3,Vec3>> &v)
 {
 	float maxDistance = 0.0f;
 
@@ -16,7 +16,15 @@ float GetMaxDistance(std::vector<Vec3> &v)
 	{
 		for(int j = i+1; j<v.size(); j++)
 		{
-			float distance = (v[i]-v[j]).length();
+			Vec3 posi = v[i].first;
+			Vec3 normali =v[i].second;
+			Vec3 posj = v[j].first;
+			Vec3 normalj = v[j].second;
+										
+			float distancei = fabs(Vec3::dot(normali,posi - posj));
+			float distancej = fabs(Vec3::dot(normalj,posi - posj));
+										
+			float distance = distancei>distancej ? distancei : distancej;
 			
 			if (distance>maxDistance)
 				maxDistance=distance;
@@ -75,10 +83,11 @@ float ScorePlacementAreaAndIncon(AlignmentMap *am, std::map<int,Patch> *patches,
 	xsize /= downSize; xsize++;
 	ysize /= downSize; ysize++;
 	
-	std::vector<std::vector<Vec3>> plotted(xsize*ysize);
+	std::vector<std::vector<std::pair<Vec3,Vec3>>> plotted(xsize*ysize);
 
-	int score = 0;
+	float score = 0;
 				
+	int ptsFound=0,normFound=0;
 	{
 		for (auto i : patchOrder)
 		{			
@@ -102,14 +111,25 @@ float ScorePlacementAreaAndIncon(AlignmentMap *am, std::map<int,Patch> *patches,
 				int xp = (int)x-(int)xmin;
 				int yp = (int)y-(int)ymin;
 
-				if (xp%5==0 && yp%5==0)
+				if (xp%downSize==0 && yp%downSize==0)
 				{
-					if (!plotted[(yp/downSize)*xsize+(xp/downSize)].size()==0)
+					if (plotted[(yp/downSize)*xsize+(xp/downSize)].size()==0)
 					{
-						score++;
+						score+=1.0;
 					}
 				
-					plotted[(yp/downSize)*xsize+(xp/downSize)].push_back(pi.p->v);
+					Vec3 normal;
+					
+					bool gotNormal = p.GetNormal((int)pi.p->x,(int)pi.p->y,normal);
+					
+					if (!gotNormal)
+						normal=Vec3(0.0,0.0,0.0);
+					
+					plotted[(yp/downSize)*xsize+(xp/downSize)].push_back({pi.p->v,normal});
+					
+					ptsFound++;
+					if (gotNormal)
+						normFound++;
 				}
 			}
 		}
@@ -118,15 +138,18 @@ float ScorePlacementAreaAndIncon(AlignmentMap *am, std::map<int,Patch> *patches,
 	// Now iterate over plotted, looking for max distances
 	// Unlike previous implementation this ignores normals and just looks for max 3D distance
 
+	float scoreDecrease = 0;
+	
 	for(int x = 0; x<xsize; x++)
 	for(int y = 0; y<ysize; y++)
 	{
 		float d = GetMaxDistance(plotted[y*xsize+x]);
 
-		score -= d/(float)maxDistanceThresh;
+		scoreDecrease += d/(float)maxDistanceThresh;
 	} 
 				
-	return score;
+	printf("pts:%d norms:%d score:%f scoreDec:%f\n",ptsFound,normFound,score,scoreDecrease);
+	return score-scoreDecrease;
 }
 
 float ScorePlacementAreaOnly(AlignmentMap *am, std::map<int,Patch> *patches, std::unordered_map<int,std::tuple<float,float,float>> &patchPositionsXYA, std::vector<int> &patchOrder, std::set<int> &patchesToColour, std::set<std::pair<int,int>> &manualGoodRel, std::set<int> &patchesInvolved, int maxDistanceThresh, float stepSize=1.0, bool writePatch = true, bool writeColours = true, bool showDD = false)

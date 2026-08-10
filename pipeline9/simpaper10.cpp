@@ -27,6 +27,7 @@
 #include "anneal.h"
 #include "visitorder.h"
 #include "scoreplacement.h"
+#include "omissiontest.h"
 
 #define PATCH_LIMIT 4000
 
@@ -1003,7 +1004,9 @@ int main(int argc, char *argv[])
 				}
 			}
 			
-			ScorePlacement(am, patches, patchPositionsXYA,patchOrder, patchesToColour, manualGoodRel, patchesInvolved, maxDistanceThresh, 1.0, true, true, false);
+			float score = ScorePlacement(am, patches, patchPositionsXYA,patchOrder, patchesToColour, manualGoodRel, patchesInvolved, maxDistanceThresh, 1.0, true, true, false);
+			
+			printf("Score=%f\n",score);
 		}
 		
 		delete patches;
@@ -1197,6 +1200,42 @@ int main(int argc, char *argv[])
 
 		printf("Annealing\n");
 		Anneal(am,patches,patchNums,badPatches,manualBadRel,badBridges,iterations,4,initT0);
+		
+		delete patches;
+		delete am;
+	}
+
+	if (mode=='o')
+	{
+		AlignmentMap *am = new AlignmentMap;
+		std::map<int,Patch> *patches = new std::map<int,Patch>;
+
+		printf("Loading patches and relationships...\n");
+		LoadPatchesAndRelationships(patches,am,PATCH_LIMIT);
+
+		AugmentAlignmentMap(*am);
+
+		std::vector<int> patchNums;
+		for(auto &i : *patches)
+			patchNums.push_back(i.first);
+
+		std::set<int> badPatches;
+		std::set<std::pair<int,int>> manualBadRel;
+
+		LoadBadPatches(badPatches,manualBadRel,false);
+		
+		std::set<int> badBridges;
+		{
+			int i;
+			std::ifstream is(OUTPUT_DIR "/badbridges.csv");
+			while(is>>i)
+			{
+				badBridges.insert(i);
+			}
+		}
+
+		printf("Omission testing\n");
+		OmissionTest(am,patches,patchNums,badPatches,manualBadRel,badBridges,4);
 		
 		delete patches;
 		delete am;
