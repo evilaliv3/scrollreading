@@ -29,7 +29,7 @@
 #include "scoreplacement.h"
 #include "omissiontest.h"
 
-#define PATCH_LIMIT 4000
+#define PATCH_LIMIT 20000
 
 void MemInfo(void)
 {
@@ -724,6 +724,7 @@ int main(int argc, char *argv[])
 
 		printf("Loading patches and relationships...\n");
 		LoadPatchesAndRelationships(patches,am,PATCH_LIMIT);
+		AugmentAlignmentMap(*am);
 		
 		std::set<int> badPatches;
 		std::vector<std::tuple<int,int,float>> badPatchScores;
@@ -1270,6 +1271,41 @@ int main(int argc, char *argv[])
 
 		}
 	    printf("Finished running patchsprings\n");
+	}
+
+	// parameters : patch name, output prefix
+	if (mode=='z')
+	{
+		if (argc != 5)
+		{
+			printf("z <patch> <output-prefix> <max-dist>\n");
+			printf("Produce parallel patches\n");
+		}
+
+	    printf("Producing parallel patches...\n");
+		
+		float maxDist = atof(argv[4]);
+		std::string patchName(argv[2]);
+		
+		Patch patchIn;
+		
+		patchIn.Read(argv[2],0);
+		
+		int i = 0;
+		for(float d = -maxDist; d<=maxDist; d+=1.0,i++)
+		{
+			printf("d=%f\n",d);
+			
+			Patch patchOut;
+			
+			patchIn.CreateParallelPatch(d,patchOut);
+			
+			std::ostringstream outName;
+			outName << argv[3];
+						
+			patchOut.Write(outName.str(),i);
+		}
+	    printf("Finished producing parallel patches\n");
 	}
 	
 	printf("Done\n");

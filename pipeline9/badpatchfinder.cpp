@@ -232,9 +232,12 @@ void BadPatchFinder::FindBadPatchesGeneral(AlignmentMap &am, std::map<int,Patch>
 	
 	std::vector<int> indexedPatches;
 	
-	// Index patches, not including known bad patches
+	// Index patches
 	for(auto &p : *patches)
+	{
+		printf("%d\n",p.first);
 		indexedPatches.push_back(p.first);
+	}
 	
 	std::vector<int> indices; // first index is index of patch, next are all index into alignment map vector
 	
@@ -263,30 +266,44 @@ void BadPatchFinder::FindBadPatchesGeneral(AlignmentMap &am, std::map<int,Patch>
 	while(!done)
 	{
 		std::vector<int> currentSequence;
-		bool hasBadPatch = false;
+		std::set<int> currentSequencePatches;
+		bool hasBadPatch = false, hasRepeat = false;
 				
 		// output a patch sequence only if it contains no bad patches
 		int currentPatch = indexedPatches[indices[0]];
 		if (badPatches.count(currentPatch)!=0) hasBadPatch=true;
 		currentSequence.push_back(currentPatch);
+		currentSequencePatches.insert(currentPatch);
 		for(int i = 1; i<length; i++)
 		{
 			if (indices[i]<(int)am[currentPatch].size())
 			{
 				currentPatch = std::get<0>(am[currentPatch][indices[i]]);
-				if (badPatches.count(currentPatch)!=0) hasBadPatch=true;
+				if (currentSequencePatches.count(currentPatch)!=0)
+				{
+					hasRepeat=true;
+					break;
+				}
+				if (badPatches.count(currentPatch)!=0)
+				{
+					hasBadPatch=true;
+					break;
+				}
 				currentSequence.push_back(currentPatch);
+				currentSequencePatches.insert(currentPatch);
 			}
 			else
 			{
 				printf("Error in patch sequence\n");
+				printf("currentPatch=%d, am[%d].size()=%d, indices[%d]=%d\n",currentPatch,currentPatch,(int)am[currentPatch].size(),i,indices[i]);
 			}
 		}
 		
-		if (!hasBadPatch)
+		if (!hasBadPatch && !hasRepeat)
 		{
-			std::reverse(currentSequence.begin(),currentSequence.end());
-			patchSequences.push_back(currentSequence);
+			// To avoid duplicating sequences, only save those where the first patch is < the last patch
+			if (currentSequence.front() < currentSequence.back())
+				patchSequences.push_back(currentSequence);
 		}
 		
 		// increment onto the next sequence of patches

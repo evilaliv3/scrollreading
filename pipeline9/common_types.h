@@ -88,13 +88,14 @@ class Patch
 		void TransformPoint(std::tuple<float,float,float>,float x, float y, float &xo, float &yo);
 		bool GetNormal(int x, int y, Vec3 &v);
 		bool CentreVolCoords(Vec3 &v);
-		
+		void CreateParallelPatch(float distance, Patch &target);
+
 		void MakeGrid(std::vector<patchPoint> &points, int patchNum);
 		void MakeColourGrid(std::vector<patchPoint> &points, std::vector<std::tuple<int,int,int>> &colours);
 		void DestroyGrid(void);
 		void DestroyColourGrid(void);
-		void DestroyInterpolatedGrid(void);
-		
+		void DestroyInterpolatedGrid(void);	
+	
 		void SetPatchNum(int n) {patchNum = n;}
 		int GetPatchNum(void) {return patchNum;}
 		

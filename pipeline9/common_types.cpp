@@ -855,6 +855,33 @@ void Patch::DestroyInterpolatedGrid(void)
 	interpolatedPointGrid=NULL;
 }
 
+void Patch::CreateParallelPatch(float distance, Patch &target)
+{
+	std::vector<patchPoint> newPoints;
+	
+	for(int x = minux; x<=maxux; x++)
+	for(int y = minuy; y<=maxuy; y++)
+	{
+		if (pointGrid[x-minux][y-minuy])
+		{
+			Vec3 normal;
+			
+			if (GetNormal(x,y,normal))
+			{				
+				patchPoint p;
+				
+				p.x = pointGrid[x-minux][y-minuy]->x;
+			    p.y = pointGrid[x-minux][y-minuy]->y;
+				p.v = pointGrid[x-minux][y-minuy]->v + distance*normal;
+
+				newPoints.push_back(p);
+			}	
+		}
+	}
+	
+	target.BuildFromPoints(newPoints,0);
+}
+
 void PatchNumberToColour(int c, int &r, int &g, int &b)
 {
     r = 255-80*(c%3)-(c/105)%79;
