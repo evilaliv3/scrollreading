@@ -299,7 +299,7 @@ bool PatchGenerator::MarkHighStress(void)
 			r = true;
 		}
 		
-		printf("\nHigh stress at x,y,z=%f,%f,%f",paperSheet[x][y].pos.x,paperSheet[x][y].pos.y,paperSheet[x][y].pos.z);
+		if (!silent) printf("\nHigh stress at x,y,z=%f,%f,%f",paperSheet[x][y].pos.x,paperSheet[x][y].pos.y,paperSheet[x][y].pos.z);
 	  }
 	}
 	
@@ -403,7 +403,7 @@ void PatchGenerator::AddNewPoints(pointSet &newPts, pointSet &newPtsPaper)
 
 PatchGenerator::PatchGenerator(const string &surfaceZarrName_) : surfaceZarrName(surfaceZarrName_), vfc(NULL)
 {
-	printf("Init\n");
+	if (!silent) printf("Init\n");
 
     InitExpectedDistanceLookup();
 	
@@ -414,7 +414,7 @@ PatchGenerator::~PatchGenerator(void)
 {
 }
 
-bool PatchGenerator::SetSeed(float seed[9])
+bool PatchGenerator::SetSeed(const std::vector<float> &seed)
 {  
     if (ZARRRead_1(surfaceZarr,seed[2],seed[1],seed[0]) != 255)
 	  return false;
@@ -498,7 +498,7 @@ void PatchGenerator::OutputPatch(Patch &patch, int iter)
   }
   else
   {
-	  printf("PatchGenerator::OutputPatch generated %d points\n",(int)points.size());
+	  if (!silent) printf("PatchGenerator::OutputPatch generated %d points\n",(int)points.size());
   }	  
   
   // Debug individual patch problem
@@ -518,9 +518,10 @@ void PatchGenerator::OutputPatch(Patch &patch, int iter)
   patch.SetPatchNum(iter);
 }
 
-int PatchGenerator::GeneratePatch(float seed[9],Patch &patch, Patch &boundary, int iter)
+int PatchGenerator::GeneratePatch(const std::vector<float> &seed,Patch &patch, Patch &boundary, int iter, bool _silent)
 { 
-  printf("Called GeneratePatch\n");
+  silent = _silent;
+  if (!silent) printf("Called GeneratePatch\n");
   int totPointsAdded = 0;
  
   activeListSize = 0;
@@ -536,7 +537,7 @@ int PatchGenerator::GeneratePatch(float seed[9],Patch &patch, Patch &boundary, i
   pointSet newPts;
 
   // TODO - in future it would be better to keep the zarrs open, but have more efficient buffer lookup
-  printf("Opening zarrs\n");
+  if (!silent) printf("Opening zarrs\n");
   surfaceZarr = ZARROpen_1(surfaceZarrName.c_str());
  
   vfc = new VectorFieldCalculator(surfaceZarr);
@@ -554,7 +555,7 @@ int PatchGenerator::GeneratePatch(float seed[9],Patch &patch, Patch &boundary, i
   float f;  
   for(i = 0; i<MAX_GROWTH_STEPS; i++)
   {
-    printf("#");
+    if (!silent) printf("#");
 	fflush(stdout);
     int j = 0;
     while (((f=ForcesAndMove())>RELAX_FORCE_THRESHHOLD && j<MAX_RELAX_ITERATIONS) || j<MIN_RELAX_ITERATIONS)
@@ -566,7 +567,7 @@ int PatchGenerator::GeneratePatch(float seed[9],Patch &patch, Patch &boundary, i
 	
 	if (MarkHighStress())
 	{
-	  printf("\nHigh stress encountered\n");
+	  if (!silent) printf("\nHigh stress encountered\n");
 	  break;
 	}
 	
@@ -577,14 +578,17 @@ int PatchGenerator::GeneratePatch(float seed[9],Patch &patch, Patch &boundary, i
 	
     if (totPointsAdded <10 && i==10)
 	{
-		printf("\nAborting, too few points added");
+		if (!silent) printf("\nAborting, too few points added");
 		break;
 	}
   }
-  
-  printf("\n");
-  printf("Growth steps:%d\n",i);
-  printf("Mean relaxation iterations:%f\n",((float)totIters)/(float)i);
+ 
+  if (!silent)
+  { 
+    printf("\n");
+    printf("Growth steps:%d\n",i);
+    printf("Mean relaxation iterations:%f\n",((float)totIters)/(float)i);
+  }
   
   OutputPatch(patch,iter);
   

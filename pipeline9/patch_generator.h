@@ -20,7 +20,7 @@ class PatchGenerator
 		~PatchGenerator(void);
 
         void MakeActive(int x, int y);		
-		bool SetSeed(float seed[9]);
+		bool SetSeed(const std::vector<float> &seed);
 	    void ClearPointLookup(void);
         void AddPointToLookup(const point &p);
 		float GetDistanceAtPoint(int xp, int yp, int zp);
@@ -38,7 +38,7 @@ class PatchGenerator
 		void OutputBoundary(Patch &boundary, pointSet &boundaryPoints, pointSet &boundaryPointsPaper);
 		void OutputPatch(Patch &patch, int iter);
 
-        int GeneratePatch(float seed[9],Patch &patch, Patch &boundary, int iter);
+        int GeneratePatch(const std::vector<float> &seed,Patch &patch, Patch &boundary, int iter, bool _silent=false);
 	private:
 		string surfaceZarrName;
 	    ZARR_1 *surfaceZarr;
@@ -67,4 +67,5 @@ class PatchGenerator
 		
 		float expectedDistanceLookup[3][3];
 
+		bool silent;
 };

@@ -12,6 +12,8 @@
 #include <dirent.h>
 #include <random>
 
+#include <omp.h>
+
 #include "parameters.h"
 
 #include "bigpatch.h"
@@ -30,6 +32,8 @@
 #include "omissiontest.h"
 
 #define PATCH_LIMIT 20000
+#define NUM_THREADS 4
+#define MIN_SEED_DISTANCE 600
 
 void MemInfo(void)
 {
@@ -53,8 +57,13 @@ bool VarianceTest(float v0,float v1, float v2, float v3, float v4,float v5)
   return v0<=MAX_ROTATE_VARIANCE && v1<=MAX_ROTATE_VARIANCE && v2<=MAX_TRANSLATE_VARIANCE && v3<=MAX_ROTATE_VARIANCE && v4<=MAX_ROTATE_VARIANCE && v5<=MAX_TRANSLATE_VARIANCE;
 }
 
+void EraseSeedPoint(BigPatch *bpb, float x, float y, float z)
+{
+	ErasePoints(bpb,x,y,z,0,CURRENT_BOUNDARY_ERASE_DISTANCE);
+}
+
 // TODO - need to handle case when no point can be found
-bool GetNewSeed(BigPatch *bp,BigPatch *bpb,float (&seed)[9])
+bool GetNewSeed(BigPatch *bp,BigPatch *bpb,std::vector<float> &seed, bool erase = true)
 {
 	bool found = false;
 	gridPoint newSeed;
@@ -115,10 +124,7 @@ bool GetNewSeed(BigPatch *bp,BigPatch *bpb,float (&seed)[9])
 
 			}
 		}
-	
-		// Erase the selected point regardless of whether we're going to use it, so that we don't select bad seeds again
-        ErasePoints(bpb,std::get<2>(newSeed),std::get<3>(newSeed),std::get<4>(newSeed),0,CURRENT_BOUNDARY_ERASE_DISTANCE);
-
+			
         // After all of that, if we find that the seed is near the edge of the volume, go back and pick another one  
         if (!(std::get<2>(newSeed)-VOL_OFFSET_X>8 && std::get<2>(newSeed)-VOL_OFFSET_X<VOL_SIZE_X-8 &&
   	        std::get<3>(newSeed)-VOL_OFFSET_Y>8 && std::get<3>(newSeed)-VOL_OFFSET_Y<VOL_SIZE_Y-8 &&
@@ -127,6 +133,14 @@ bool GetNewSeed(BigPatch *bp,BigPatch *bpb,float (&seed)[9])
           found = false;
 		  printf("Seed was outside of volume\n");
 		}
+		
+		if (erase || !found)
+		{
+			printf("Erase:%d found:%d\n",(int)erase,(int)found);
+			// Erase the selected point regardless of whether we're going to use it, so that we don't select bad seeds again
+			EraseSeedPoint(bpb,std::get<2>(newSeed),std::get<3>(newSeed),std::get<4>(newSeed));
+		}
+
 	}
 
 	// Show what the neighbours are - useful fo debugging floating point exception error
@@ -136,9 +150,9 @@ bool GetNewSeed(BigPatch *bp,BigPatch *bpb,float (&seed)[9])
 		printf("%f,%f,%f,%f,%f,%d\n",std::get<0>(n),std::get<1>(n),std::get<2>(n),std::get<3>(n),std::get<4>(n),std::get<5>(n));
 	}
 	
-	seed[0] = std::get<2>(newSeed);
-	seed[1] = std::get<3>(newSeed);
-	seed[2] = std::get<4>(newSeed);
+	seed.push_back(std::get<2>(newSeed));
+	seed.push_back(std::get<3>(newSeed));
+	seed.push_back(std::get<4>(newSeed));
 	Vec3 v(std::get<2>(neighbours[0])-std::get<2>(neighbours[seedAxis0]),
 	       std::get<3>(neighbours[0])-std::get<3>(neighbours[seedAxis0]),
 	       std::get<4>(neighbours[0])-std::get<4>(neighbours[seedAxis0]));
@@ -147,27 +161,49 @@ bool GetNewSeed(BigPatch *bp,BigPatch *bpb,float (&seed)[9])
 	       std::get<4>(neighbours[0])-std::get<4>(neighbours[seedAxis1]));
 	v = v.normalized();
 	w = w.normalized();
-	seed[3] = v.x;
-	seed[4] = v.y;
-	seed[5] = v.z;
-	seed[6] = w.x;
-	seed[7] = w.y;
-	seed[8] = w.z;
+	seed.push_back(v.x);
+	seed.push_back(v.y);
+	seed.push_back(v.z);
+	seed.push_back(w.x);
+	seed.push_back(w.y);
+	seed.push_back(w.z);
 		
+	return true;
+}
+
+// no two seeds should be closer than specified distance
+bool CheckSeedDistances(std::vector<std::vector<float>> &seeds)
+{
+	for(size_t i = 0; i<seeds.size(); i++)
+	{
+		for(size_t j = i+1; j<seeds.size(); j++)
+		{
+			if (Distance(seeds[i][0],seeds[i][1],seeds[i][2],seeds[j][0],seeds[j][1],seeds[j][2]) < MIN_SEED_DISTANCE)
+				return false;
+		}
+	}
+	
 	return true;
 }
 
 // Since most time is now taken by up patch generation, this could be made multithreaded by generating several seeds at a time,
 // and if they are spaced far enough apart then generate several patches at once.
 //
-// This can be done by having more than once instance of PatchGenerator
-void GeneratePatches(std::map<int,Patch> *patches,AlignmentMap *am, int numPatches)
+// This is done by having more than once instance of PatchGenerator
+bool GeneratePatches(std::map<int,Patch> *patches,AlignmentMap *am, int numPatches)
 {
 	int acceptedCount=0,unalignedCount=0,acceptedWithSomeBadVariance=0;
 
-	PatchGenerator *pg = new PatchGenerator(string(SURFACE_ZARR));
+	PatchGenerator *pg[NUM_THREADS];
 	
-	float seed[9] = {
+	for(int i = 0; i<NUM_THREADS; i++)
+	{
+		pg[i] = new PatchGenerator(string(SURFACE_ZARR));
+	}
+	
+	std::vector<std::vector<float> > seeds;
+			
+	float seedInit[] = {
 	  SEED_X,
 	  SEED_Y,
 	  SEED_Z,
@@ -178,6 +214,8 @@ void GeneratePatches(std::map<int,Patch> *patches,AlignmentMap *am, int numPatch
 	  SEED_AXIS2_Y,
 	  SEED_AXIS2_Z};
 
+	seeds.push_back(std::vector<float>(std::begin(seedInit),std::end(seedInit)));
+	  
 	BigPatch *bp = OpenBigPatch(OUTPUT_DIR "/surface.bp");
 	BigPatch *bpb = OpenBigPatch(OUTPUT_DIR "/boundary.bp");
 
@@ -194,165 +232,209 @@ void GeneratePatches(std::map<int,Patch> *patches,AlignmentMap *am, int numPatch
 	// If we are restarting, we need to choose a new seed (overwrite what we set above)
 	if (startingPatch>0)
 	{
-		if (!GetNewSeed(bp,bpb,seed))
-			return;			
+		seeds.clear();
+		seeds.push_back(std::vector<float>());
+		if (!GetNewSeed(bp,bpb,seeds.back()))
+		{
+			seeds.pop_back();
+			return false;
+		}
 	}
 	
-	for(int i=startingPatch; i<=startingPatch+numPatches; i++)
+	for(int i=startingPatch; i<=startingPatch+numPatches;)
 	{
 		MemInfo();
 		printf("======== Patch %d ========\n",i);
-		
-		printf("Seed: %f,%f,%f,%f,%f,%f,%f,%f,%f,\n",seed[0],seed[1],seed[2],seed[3],seed[4],seed[5],seed[6],seed[7],seed[8]);
-		Patch boundary;
-		
-		(*patches)[i] = Patch();
-	
-		printf("About to call GeneratePatch\n");
-		int steps = pg->GeneratePatch(seed,(*patches)[i],boundary,i);
-		(*patches)[i].radius = steps/2;
-		
-		printf("%d growth steps\n",steps);
 
-/*
-	If this is the first iteration, generate only one patch
-	otherwise generate several at once:
-	int p = omp_get_max_threads();
-	int steps[4];
-	
-	#pragma omp parallel num_threads(p)
-	{
-		int thrd = omp_get_thread_num();
-		
-		steps[thrd] = pg[thrd]->GeneratePatch(seed[thrd],newPatch[thrd],boundary[thrd],i+thrd);
-		newPatch[thrd].radius = steps/2;
-	}
-	
-	for(int thrd = 0; thrd<p; thrd++)
-	{
-		printf("Patch %d had %d growth steps\n",i+thrd,steps[thrd]);
-	}
-	
-*/
-		if (i==0)
+		if (i != startingPatch)
 		{
-			if (steps < MIN_PATCH_ITERS)
+			seeds.clear();
+			
+			for(int j=0; j<2*NUM_THREADS && seeds.size()<NUM_THREADS; j++)
 			{
-				printf("Not enough growth steps (%d) on first seed\n",steps);
-				exit(1);
-			}
-			
-			printf("Adding patch to bigpatch\n");
-			AddToBigPatch(bp,(*patches)[i],i);
-			printf("Adding boundary to bigpatch\n");
-			AddToBigPatch(bpb,boundary,i);	
-
-			printf("Added to bigpatch on first iteration");
-			
-			// Code for checking that iterating counts the same number of points as counting all points in pointGrid */
-			/*
-			{
-				int count = 0,count1 = 0;
-				for(PatchIterator pi = (*patches)[i].Begin(); (*patches)[i].Next(pi);)
+				seeds.push_back(std::vector<float>());
+				if (!GetNewSeed(bp,bpb,seeds.back(),j==0))
 				{
-					count++;
-				}					
-				
-				for(int x=0; x<=(*patches)[i].maxux-(*patches)[i].minux; x++)
-				for(int y=0; y<=(*patches)[i].maxuy-(*patches)[i].minuy; y++)
-				{
-					if ((*patches)[i].pointGrid[x][y]) count1++;
-				}
-				
-				printf("%d %d\n",count,count1);
-				exit(0);
-			}
-			*/
-			// Code for checking that normal calculation looks plausible
-			/*{
-				Vec3 n;
-				(*patches)[i].GetNormal(0,0,n);
-				
-				printf("%f,%f,%f\n",n.x,n.y,n.z);
-			}*/
-		}			
-		else if (steps >= MIN_PATCH_ITERS)
-		{
-			for(int alignAttempts = 0; alignAttempts<2; alignAttempts++)
-			{
-				Aligner *al = new Aligner();
-			
-				std::vector<alignment> alignments;
-			
-				al->AlignPatches(bp,(*patches)[i],alignments);
-			
-				delete al;
-			
-				int numSuccessfulAlignments = 0, badVarianceCount = 9;
-				for(auto const &a : alignments)
-				{
-					printf("%d (%f,%f,%f,%f,%f,%f) (%f,%f,%f,%f,%f,%f)\n",
-						std::get<0>(a),
-						std::get<1>(a),
-						std::get<2>(a),
-						std::get<3>(a),
-						std::get<4>(a),
-						std::get<5>(a),
-						std::get<6>(a),
-						std::get<7>(a),
-						std::get<8>(a),
-						std::get<9>(a),
-						std::get<10>(a),
-						std::get<11>(a),
-						std::get<12>(a));
-				  
-					if (VarianceTest(std::get<1>(a),std::get<2>(a),std::get<3>(a),std::get<4>(a),std::get<5>(a),std::get<6>(a)))
-					{
-						numSuccessfulAlignments++;
-						if (am->count(i)==0)
-							(*am)[i] = std::vector<alignment>();
-						(*am)[i].push_back(a);
-					}
-					else
-						badVarianceCount++;
-				}
-			
-				if (numSuccessfulAlignments)
-				{
-					acceptedCount++;
-					if (badVarianceCount>0)
-						acceptedWithSomeBadVariance++;
-			
-					// For the boundary we need to work out:
-					// Given the new patch, which points from the current boundary should we delete?
-					ErasePoints(bpb,(*patches)[i],0,CURRENT_BOUNDARY_ERASE_DISTANCE);
-					ErasePoints(bp,boundary,1,NEW_BOUNDARY_ERASE_DISTANCE);
-
-					if (!boundary.Empty())
-						AddToBigPatch(bpb,boundary,i);
-					AddToBigPatch(bp,(*patches)[i],i);
-
+					seeds.pop_back();
 					break;
 				}
-				else if (alignAttempts==0)
+				
+				if (j>0)
 				{
-					// Flip the patch and loop round for another try
-					(*patches)[i].Flip();
-				}
-				else
-				{
-					unalignedCount++;
-					patches->erase(i);
+					// make sure that that the new seed is sufficiently far from previous seeds.
+					if (!CheckSeedDistances(seeds))
+					{
+						// if not then discard it
+						printf("Seed did not meet distance requirement\n");
+						seeds.pop_back();
+					}
+					else
+					{
+						printf("Seed met distance requirement\n");
+						// if yes then keep it, and because it will be used we need to erase it from the boundary.
+						EraseSeedPoint(bpb,seeds.back()[0],seeds.back()[1],seeds.back()[2]);
+					}
 				}
 			}
+		}
+	
+		if (seeds.size()>0)
+		{
+			
+			printf("Generated %d seeds\n",(int)seeds.size());
+			
+			for(auto &seed : seeds)
+			{
+				printf("Seed: %f,%f,%f,%f,%f,%f,%f,%f,%f,\n",seed[0],seed[1],seed[2],seed[3],seed[4],seed[5],seed[6],seed[7],seed[8]);
+			}
+			
+			Patch boundary[NUM_THREADS];
+			int steps[NUM_THREADS];
+
+			int N = seeds.size();
+
+			for(int patchGenNum = 0; patchGenNum<N; patchGenNum++)
+			{
+				(*patches)[i+patchGenNum] = Patch();
+			}
+			
+			#pragma omp parallel for schedule(dynamic)
+			for(int patchGenNum = 0; patchGenNum<N; patchGenNum++)
+			{
+				printf("About to call GeneratePatch\n");
+				steps[patchGenNum] = pg[patchGenNum]->GeneratePatch(seeds[patchGenNum],(*patches)[i+patchGenNum],boundary[patchGenNum],i+patchGenNum,false);
+				(*patches)[i+patchGenNum].radius = steps[patchGenNum]/2;
+			}
+		
+			for(int patchGenNum = 0; patchGenNum<seeds.size(); patchGenNum++)
+				printf("Patch %d had %d growth steps\n",i+patchGenNum,steps[patchGenNum]);
+
+			if (i==0)
+			{
+				if (steps[0] < MIN_PATCH_ITERS)
+				{
+					printf("Not enough growth steps (%d) on first seed\n",steps);
+					exit(1);
+				}
+				
+				printf("Adding patch to bigpatch\n");
+				AddToBigPatch(bp,(*patches)[i],i);
+				printf("Adding boundary to bigpatch\n");
+				AddToBigPatch(bpb,boundary[0],i);	
+
+				printf("Added to bigpatch on first iteration");
+				
+				// Code for checking that iterating counts the same number of points as counting all points in pointGrid */
+				/*
+				{
+					int count = 0,count1 = 0;
+					for(PatchIterator pi = (*patches)[i].Begin(); (*patches)[i].Next(pi);)
+					{
+						count++;
+					}					
+					
+					for(int x=0; x<=(*patches)[i].maxux-(*patches)[i].minux; x++)
+					for(int y=0; y<=(*patches)[i].maxuy-(*patches)[i].minuy; y++)
+					{
+						if ((*patches)[i].pointGrid[x][y]) count1++;
+					}
+					
+					printf("%d %d\n",count,count1);
+					exit(0);
+				}
+				*/
+				// Code for checking that normal calculation looks plausible
+				/*{
+					Vec3 n;
+					(*patches)[i].GetNormal(0,0,n);
+					
+					printf("%f,%f,%f\n",n.x,n.y,n.z);
+				}*/
+			}			
+			else for(int patchGenNum = 0; patchGenNum<seeds.size(); patchGenNum++)
+			if (steps[patchGenNum] >= MIN_PATCH_ITERS)
+			{
+				for(int alignAttempts = 0; alignAttempts<2; alignAttempts++)
+				{
+					Aligner *al = new Aligner();
+				
+					std::vector<alignment> alignments;
+				
+					al->AlignPatches(bp,(*patches)[i+patchGenNum],alignments);
+				
+					delete al;
+				
+					int numSuccessfulAlignments = 0, badVarianceCount = 9;
+					for(auto const &a : alignments)
+					{
+						printf("%d (%f,%f,%f,%f,%f,%f) (%f,%f,%f,%f,%f,%f)\n",
+							std::get<0>(a),
+							std::get<1>(a),
+							std::get<2>(a),
+							std::get<3>(a),
+							std::get<4>(a),
+							std::get<5>(a),
+							std::get<6>(a),
+							std::get<7>(a),
+							std::get<8>(a),
+							std::get<9>(a),
+							std::get<10>(a),
+							std::get<11>(a),
+							std::get<12>(a));
+					  
+						if (VarianceTest(std::get<1>(a),std::get<2>(a),std::get<3>(a),std::get<4>(a),std::get<5>(a),std::get<6>(a)))
+						{
+							numSuccessfulAlignments++;
+							if (am->count(i+patchGenNum)==0)
+								(*am)[i+patchGenNum] = std::vector<alignment>();
+							(*am)[i+patchGenNum].push_back(a);
+						}
+						else
+							badVarianceCount++;
+					}
+				
+					if (numSuccessfulAlignments)
+					{
+						acceptedCount++;
+						if (badVarianceCount>0)
+							acceptedWithSomeBadVariance++;
+				
+						// For the boundary we need to work out:
+						// Given the new patch, which points from the current boundary should we delete?
+						ErasePoints(bpb,(*patches)[i+patchGenNum],0,CURRENT_BOUNDARY_ERASE_DISTANCE);
+						ErasePoints(bp,boundary[patchGenNum],1,NEW_BOUNDARY_ERASE_DISTANCE);
+
+						if (!boundary[patchGenNum].Empty())
+							AddToBigPatch(bpb,boundary[patchGenNum],i+patchGenNum);
+						AddToBigPatch(bp,(*patches)[i+patchGenNum],i+patchGenNum);
+
+						break;
+					}
+					else if (alignAttempts==0)
+					{
+						// Flip the patch and loop round for another try
+						(*patches)[i+patchGenNum].Flip();
+					}
+					else
+					{
+						unalignedCount++;
+						patches->erase(i+patchGenNum);
+					}
+				}
+			}
+			else
+			{
+				printf("Not enough growth steps\n");
+				patches->erase(i+patchGenNum);
+			}
+		
+			i += seeds.size();
 		}
 		else
 		{
-			printf("Not enough growth steps\n");
-			patches->erase(i);
+			printf("::::: ENDING - No seeds generated :::::\n");
+			break;
 		}
-		
-		GetNewSeed(bp,bpb,seed);
 	}
 	
 	CloseBigPatch(bpb);
@@ -389,8 +471,11 @@ void GeneratePatches(std::map<int,Patch> *patches,AlignmentMap *am, int numPatch
 	}
 
 	printf("Deleting pg\n");
-	delete pg;
+	for(int i = 0; i<NUM_THREADS; i++)
+		delete pg[i];
 	printf("Deleting patches\n");
+	
+	return true;
 }
 
 void LoadPatchesAndRelationships(std::map<int,Patch> *patches, 	AlignmentMap *am, int limit = -1, std::set<int> *restricted = NULL)
