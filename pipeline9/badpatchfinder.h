@@ -49,7 +49,7 @@ class BadPatchFinder
 	
 		void FindBadPatchesGeneral(AlignmentMap &am, std::map<int,Patch> *patches, int length, std::set<int> &badPatches, std::vector<std::tuple<int,int,float>> &badPatchScores);
 
-		void FindNeighbourProblems(std::map<int,std::set<int> > &neighbourList, std::map<int,Patch> *patches, std::set<int> badBridges, std::map<int,int> &newBadBridges,std::map<int,affineTx> &patchPositions);
+		void FindNeighbourProblems(std::map<int,std::set<int> > &neighbourList, std::map<int,Patch> *patches, std::set<int> badBridges, std::map<int,int> &newBadBridges, std::vector<int> &patchOrder, std::map<int,affineTx> &patchPositions);
 
 	private:
 		float rendered_f[R_ARRAY_SIZE][R_ARRAY_SIZE][2][3];

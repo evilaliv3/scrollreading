@@ -16,7 +16,7 @@
 
 #include "tiffio.h"
 
-#include "zarr_4.c"
+#include "zarr_4_uint16.c"
 
 #include "bigpatch.h"
 
@@ -193,14 +193,14 @@ void render(char *zname,char *fname, char *colourFile, int maskOnly)
 							{
 								printf("%d,%d,%d,%d\n",xo,yo,minx,miny);
 							}
-							uint8_t v;
+							uint16_t v;
 							v = ZARRRead_4(volumeZarr,z/scale,y/scale,x/scale);
 							if (v==0)
 							{
 								printf("x,y,z=%d,%d,%d is 0\n",x,y,z);
 							}
 
-							int vtrans = v;
+							int vtrans = (v>>8);
 							
 							if (vtrans<0) vtrans=0;
 							if (vtrans>255) vtrans=255;
@@ -223,10 +223,17 @@ void render(char *zname,char *fname, char *colourFile, int maskOnly)
 								rb = maskOnly?255:b*value/255;
 							}
 							
-							if (z%200<8)
+							// To orient in z direction, colours go 0:purple, 200: blue:, 400: cyan ... 
+							if (z>=5000 && z<=5008)
 							{
-								rr += 64; 
-								rg += 64; 
+								rr += 64;
+								rg += 64;
+								rb += 64;
+							}
+							else if (z%200<8)
+							{
+								rr += (z%600<8)?64:32;
+								rg += ((z+200)%600<8)?64:32; 
 								rb += 64; 
 							}
 

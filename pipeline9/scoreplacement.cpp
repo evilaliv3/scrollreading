@@ -236,7 +236,7 @@ float ScorePlacementAreaOnly(AlignmentMap *am, std::map<int,Patch> *patches, std
 	return score;
 }
 
-float ScorePlacement(AlignmentMap *am, std::map<int,Patch> *patches, std::unordered_map<int,std::tuple<float,float,float>> &patchPositionsXYA, std::vector<int> &patchOrder, std::set<int> &patchesToColour, std::set<std::pair<int,int>> &manualGoodRel, std::set<int> &patchesInvolved, int maxDistanceThresh, float stepSize=1.0, bool writePatch = true, bool writeColours = true, bool showDD = false)
+float ScorePlacement(AlignmentMap *am, std::map<int,Patch> *patches, std::unordered_map<int,std::tuple<float,float,float>> &patchPositionsXYA, std::vector<int> &patchOrder, std::set<int> &patchesToColour, std::set<std::pair<int,int>> &manualGoodRel, std::set<int> &patchesInvolved, int maxDistanceThresh, float stepSize=1.0, bool writePatch = true, bool writeColours = true, bool showDD = false, int outputNum = 0)
 {
     //printf("Starting ScorePlacement\n");
 			
@@ -459,11 +459,11 @@ float ScorePlacement(AlignmentMap *am, std::map<int,Patch> *patches, std::unorde
 			printf("Making patch\n");
 
 			if (writeColours)
-				outputPatch.BuildFromPoints(points,colours,0);
+				outputPatch.BuildFromPoints(points,colours,outputNum);
 			else
-				outputPatch.BuildFromPoints(points,0);
+				outputPatch.BuildFromPoints(points,outputNum);
 				
-			outputPatch.Write(OUTPUT_DIR,0);
+			outputPatch.Write(OUTPUT_DIR,outputNum);
 		}
 		
 		if (showDD)

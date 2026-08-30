@@ -31,7 +31,7 @@
 #include "scoreplacement.h"
 #include "omissiontest.h"
 
-#define PATCH_LIMIT 20000
+#define PATCH_LIMIT 10000
 #define NUM_THREADS 4
 #define MIN_SEED_DISTANCE 600
 
@@ -618,7 +618,7 @@ void LoadBadPatches(std::set<int> &badPatches, std::set<std::pair<int,int>> &man
 
 int main(int argc, char *argv[])
 {
-	char mode='g';
+	std::string mode("g");
 	if (false) // TODO parameter checking
 	{
 		fprintf(stderr,"Usage: %s [mode]\n",argv[0]);
@@ -633,7 +633,7 @@ int main(int argc, char *argv[])
 	else
 	{
 		if (argc>=2)
-			mode = argv[1][0];
+			mode = std::string(argv[1]);
 	}
 	
 	printf("Started\n");
@@ -642,7 +642,7 @@ int main(int argc, char *argv[])
 	srand(RANDOM_SEED);
 
 	// examine alignment of two patches
-	if (mode=='x')
+	if (mode=="x")
 	{
 		if (argc!=6)
 		{
@@ -701,7 +701,7 @@ int main(int argc, char *argv[])
 		}			
 	}
 	
-	if (mode=='g')
+	if (mode=="g")
 	{
 		int numPatches = 100;
 		if (argc>=3)
@@ -717,7 +717,7 @@ int main(int argc, char *argv[])
 		delete am;
 	}
 
-	if (mode=='r')
+	if (mode=="r")
 	{
 		int numPatches = 100;
 		if (argc>=3)
@@ -736,7 +736,7 @@ int main(int argc, char *argv[])
 		delete am;
 	}
 
-	if (mode=='l')
+	if (mode=="l")
 	{
 		AlignmentMap *am = new AlignmentMap;
 		std::map<int,Patch> *patches = new std::map<int,Patch>;
@@ -766,7 +766,7 @@ int main(int argc, char *argv[])
 		delete am;
 	}
 	
-	if (mode=='b')
+	if (mode=="b")
 	{
 		AlignmentMap *am = new AlignmentMap;
 		std::map<int,Patch> *patches = new std::map<int,Patch>;
@@ -802,7 +802,7 @@ int main(int argc, char *argv[])
 		delete am;
 	}
 
-	if (mode=='c')
+	if (mode=="c")
 	{
 		AlignmentMap *am = new AlignmentMap;
 		std::map<int,Patch> *patches = new std::map<int,Patch>;
@@ -891,7 +891,7 @@ int main(int argc, char *argv[])
 		delete am;
 	}
 	
-	if (mode=='v')
+	if (mode=="v")
 	{
 		AlignmentMap *am = new AlignmentMap;
 		std::map<int,Patch> *patches = new std::map<int,Patch>;
@@ -911,6 +911,10 @@ int main(int argc, char *argv[])
 		std::map<int,affineTx> patchPositions;
 		std::map<int,std::set<int> > neighbourList;
 		
+		// make a version of this that outputs the N biggest items
+		// MakeVisitOrders : it will output alignmentorder_1.txt, neighbours_1.csv etc...
+		// then similarly for patchstrings, and the f command. Each will process several.
+		// Simulated annealing will do the same, and the score will be based on all collections of patches...
 		MakeVisitOrder(am,patches,badPatches,manualBadRel,patchOrder,alignmentOrder,patchPositions,neighbourList,true);
 		
 		{
@@ -950,7 +954,7 @@ int main(int argc, char *argv[])
 			while(true)
 			{
 				std::map<int,int> newBadBridges;
-				bpf->FindNeighbourProblems(neighbourList,patches,badBridges,newBadBridges,patchPositions);
+				bpf->FindNeighbourProblems(neighbourList,patches,badBridges,newBadBridges,patchOrder,patchPositions);
 				
 				if (newBadBridges.size()>0)
 				{
@@ -988,6 +992,123 @@ int main(int argc, char *argv[])
 		delete patches;
 		delete am;
 	}
+
+	if (mode=="vm")
+	{
+		int numComponents = 1;
+		
+		if (argc>=3)
+			numComponents = atoi(argv[2]);
+
+		AlignmentMap *am = new AlignmentMap;
+		std::map<int,Patch> *patches = new std::map<int,Patch>;
+
+		printf("Loading patches and relationships...\n");
+		LoadPatchesAndRelationships(patches,am,PATCH_LIMIT);
+		
+		AugmentAlignmentMap(*am);
+
+		std::set<int> badPatches;
+		std::set<std::pair<int,int>> manualBadRel;
+
+		LoadBadPatches(badPatches,manualBadRel);
+		
+		std::vector<std::vector<int>> patchOrders;
+		std::vector<std::vector<std::pair<int,alignment>>> alignmentOrders;
+		std::vector<std::map<int,affineTx>> patchPositionss;
+		std::map<int,std::set<int> > neighbourList;
+		
+		numComponents = MakeVisitOrders(numComponents,am,patches,badPatches,manualBadRel,patchOrders,alignmentOrders,patchPositionss,neighbourList,true);
+		
+		{
+			ofstream os(OUTPUT_DIR "/alignmentorders.txt");
+			
+			for(auto &i : alignmentOrders)
+			{
+				os << "NEW" << std::endl;
+				for(auto &a : i)
+				{
+					os << a.first << " "
+					   << (*patches)[a.first].radius << " "			
+					   << std::get<0>(a.second) << " "
+					   << std::get<7>(a.second) << " "
+					   << std::get<8>(a.second) << " "
+					   << std::get<9>(a.second) << " "
+					   << std::get<10>(a.second) << " "
+					   << std::get<11>(a.second) << " "
+					   << std::get<12>(a.second) << " "
+					   << endl;
+				}
+			}
+		}
+
+		{
+			ofstream os(OUTPUT_DIR "/neighbourss.csv");
+			
+			for(auto &i : alignmentOrders)
+			{
+				os << "NEW" << std::endl;
+				for(auto &a : i)
+				{
+					os << a.first << ","
+					   << std::get<0>(a.second)
+					   << ",1" << endl;
+				}
+			}
+		}
+
+		{
+			// remember to copy this to badbridges.csv
+			std::ofstream os(OUTPUT_DIR "/badbridgess_out.csv");
+
+			for(int i = 0; i<numComponents; i++)
+			{
+				printf("Looking for implausible bridges in component %d\n",i);
+				BadPatchFinder *bpf = new BadPatchFinder();
+				std::set<int> badBridges;
+				
+				while(true)
+				{
+					std::map<int,int> newBadBridges;
+					bpf->FindNeighbourProblems(neighbourList,patches,badBridges,newBadBridges,patchOrders[i],patchPositionss[i]);
+					
+					if (newBadBridges.size()>0)
+					{
+						int max = -1;
+						int maxp = -1;
+						
+						for(auto &bb : newBadBridges)
+						{
+							if (bb.second>max)
+							{
+								max = bb.second;
+								maxp = bb.first;
+							}
+						}
+						
+						printf("Bad bridge: %d\n",maxp);
+						badBridges.insert(maxp);
+					}
+					else
+						break;
+				}
+
+				os << "NEW" << std::endl;
+				
+				for(auto i : badBridges)
+				{
+					os << i << std::endl;;
+				}
+				
+				delete bpf;
+			}
+		}
+		
+		delete patches;
+		delete am;
+	}
+
+	
 /*
 	{
 		ofstream os("patchPositions.txt");
@@ -1001,7 +1122,7 @@ int main(int argc, char *argv[])
 	}
 */
 
-	if (mode=='f')
+	if (mode=="f")
 	{
 		int maxDistanceThresh = -1;
 		
@@ -1099,12 +1220,107 @@ int main(int argc, char *argv[])
 		delete am;
 	}
 
+	if (mode=="fm")
+	{
+		int maxDistanceThresh = -1;
+		
+		if (argc>=3)
+			maxDistanceThresh = atoi(argv[2]);
+
+		int numComponents = 1;
+		
+		if (argc>=4)
+			numComponents = atoi(argv[3]);
+		
+		AlignmentMap *am = new AlignmentMap;
+		std::map<int,Patch> *patches = new std::map<int,Patch>;
+
+		printf("Loading patches and relationships...\n");
+		LoadPatchesAndRelationships(patches,am,PATCH_LIMIT);
+
+		std::set<std::pair<int,int>> manualGoodRel;
+
+		{
+			std::ifstream is(OUTPUT_DIR "/manualGoodRel.csv");
+			std::string line;
+			while(std::getline(is,line))
+			{
+				std::istringstream ss(line);
+				int a, b;
+				char comma;
+				if (ss >> a >> comma >> b)
+					manualGoodRel.insert({a, b});
+			}
+		}
+		
+		for(int compIndex = 0; compIndex < numComponents; compIndex++)
+		{
+			std::vector<int> patchOrder;
+			
+			{
+				std::ifstream is(OUTPUT_DIR "/patchorders.csv");
+				int poCounter = 0;
+				std::string line;
+				while (std::getline(is, line)) {
+					if (line=="NEW")
+					{
+						printf("Encountered NEW reading patchOrder\n");
+						if (poCounter>compIndex)
+							break;
+						else
+						{
+							patchOrder.clear();
+							poCounter++;
+						}
+					}
+					else
+					{
+						patchOrder.push_back(atoi(line.c_str()));
+					}
+				}
+
+			}
+
+			std::set<int> patchesInvolved;
+
+
+			std::unordered_map<int,std::tuple<float,float,float>> patchPositionsXYA;
+
+			{
+				for (auto i : patchOrder)
+					(*patches)[i].UnsetPosition();
+
+				ostringstream oss;
+				oss << OUTPUT_DIR << "/patchPositions_" << compIndex << ".txt";
+				ifstream is(oss.str());
+					
+				while(true)
+				{
+					int patchNum;
+					float x,y,angle;
+					if (is >> patchNum >> x >> y >> angle)
+						patchPositionsXYA[patchNum]=std::tuple<float,float,float>(x,y,angle);
+					else
+						break;
+				}
+			}
+
+			std::set<int> patchesToColour;
+			float score = ScorePlacement(am, patches, patchPositionsXYA,patchOrder, patchesToColour, manualGoodRel, patchesInvolved, maxDistanceThresh, 1.0, true, true, false, compIndex);
+				
+			printf("Score=%f\n",score);
+		}
+		
+		delete patches;
+		delete am;
+	}
+
     // 'a' and 'A' generate images in sliceanim - moving up and down the scroll as more and more patches are added.
     // This helps to spot mistakes.	
 	// after generating sliceanim, turn it into an mp4 using this
 	// ffmpeg -framerate 24 -i d:/pipelineOutput/sliceanim/s_%08d.tif -vf scale=iw/2:ih/2 -c:v libx264 -pix_fmt yuv420p d:/pipelineOutput/sliceanim.mp4
 	// A means show global coords of patches
-	if (mode=='a' || mode=='A')
+	if (mode=="a" || mode=="A")
 	{
 		int closeUpIter = -1;
 		
@@ -1150,12 +1366,12 @@ int main(int argc, char *argv[])
 
 		printf("Rendering...\n");
 
-		SliceAnimRender(surfaceZarr,std::string(OUTPUT_DIR "/sliceanim"),100,50,1,closeUpIter,patches,patchOrder,mode=='A');
+		SliceAnimRender(surfaceZarr,std::string(OUTPUT_DIR "/sliceanim"),100,50,1,closeUpIter,patches,patchOrder,mode=="A");
 	
 		ZARRClose_1_b700(surfaceZarr);
 	}
 
-	if (mode=='p')
+	if (mode=="p")
 	{
 		std::vector<int> patchesToShow;
 		std::set<int> patchesToShowSet;
@@ -1182,7 +1398,7 @@ int main(int argc, char *argv[])
 		ZARRClose_1_b700(surfaceZarr);
 	}
 
-	if (mode=='s')
+	if (mode=="s")
 	{		
 		int zcoord = SEED_Z;
 		
@@ -1214,7 +1430,7 @@ int main(int argc, char *argv[])
 
 	// q <path> <patchnum> x y
 	// returns the vx,vy,vz volume coords of x,y
-	if (mode=='q')
+	if (mode=="q")
 	{		
 		int patchNum, x, y;
 		
@@ -1247,7 +1463,7 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	if (mode=='n')
+	if (mode=="n")
 	{
 		int iterations = 100;
 		float initT0 = -1;
@@ -1291,7 +1507,56 @@ int main(int argc, char *argv[])
 		delete am;
 	}
 
-	if (mode=='o')
+	if (mode=="nm")
+	{
+		int numComponents = 1;
+		
+		if (argc>=3)
+			numComponents = atoi(argv[2]);
+
+		int iterations = 100;
+		float initT0 = -1;
+		
+		if (argc>=4)
+			iterations = atoi(argv[3]);
+        if (argc>=5)
+			initT0 = atof(argv[4]);
+
+		AlignmentMap *am = new AlignmentMap;
+		std::map<int,Patch> *patches = new std::map<int,Patch>;
+
+		printf("Loading patches and relationships...\n");
+		LoadPatchesAndRelationships(patches,am,PATCH_LIMIT);
+
+		AugmentAlignmentMap(*am);
+
+		std::vector<int> patchNums;
+		for(auto &i : *patches)
+			patchNums.push_back(i.first);
+
+		std::set<int> badPatches;
+		std::set<std::pair<int,int>> manualBadRel;
+
+		LoadBadPatches(badPatches,manualBadRel,false);
+		
+		std::set<int> badBridges;
+		{
+			int i;
+			std::ifstream is(OUTPUT_DIR "/badbridges.csv");
+			while(is>>i)
+			{
+				badBridges.insert(i);
+			}
+		}
+
+		printf("Annealing\n");
+		AnnealAll(numComponents,am,patches,patchNums,badPatches,manualBadRel,badBridges,iterations,4,initT0);
+		
+		delete patches;
+		delete am;
+	}
+
+	if (mode=="o")
 	{
 		AlignmentMap *am = new AlignmentMap;
 		std::map<int,Patch> *patches = new std::map<int,Patch>;
@@ -1327,7 +1592,7 @@ int main(int argc, char *argv[])
 		delete am;
 	}
 
-	if (mode=='h')
+	if (mode=="h")
 	{
 	    printf("Running patchsprings...\n");
 		{
@@ -1358,8 +1623,66 @@ int main(int argc, char *argv[])
 	    printf("Finished running patchsprings\n");
 	}
 
+	if (mode=="hm")
+	{
+		int numComponents = 1;
+		
+		if (argc>=3)
+			numComponents = atoi(argv[2]);
+
+		for(int i = 0; i<numComponents; i++)
+		{
+			printf("Patchsprings for component %d\n",i);
+			
+			PatchSpringSimulation pss(QUADMESH_SIZE,OUTPUT_DIR,i);
+			
+			pss.loadPatchVolCoords(OUTPUT_DIR "/patchVolCoords.csv");
+			
+			std::vector<std::vector<std::string>> alignmentOrderDash;
+			{
+				int alCounter = 0;
+				
+				std::ifstream f(OUTPUT_DIR "/alignmentorders.txt");
+				if (!f) {
+					std::cerr << "Could not open alignmentorders.txt\n";
+				}
+				std::string line;
+				while (std::getline(f, line)) {
+					if (line=="NEW")
+					{
+						printf("Encountered NEW reading alignmentOrder\n");
+						if (alCounter>i)
+							break;
+						else
+						{
+							alignmentOrderDash.clear();
+							alCounter++;
+						}
+					}
+					else
+					{
+						alignmentOrderDash.push_back(splitOnSpaceDropLast(line));
+					}
+				}
+			}
+
+			// Check whether we are past max number of components
+			if (alignmentOrderDash.size()==0)
+				break;
+			
+			printf("Loading patches for patchsprings...\n");
+			pss.loadPatches(alignmentOrderDash, PATCH_LIMIT);
+			
+			printf("Running patchsprings...\n");
+		    pss.run(50);
+			printf("Finished patchsprings...\n");
+
+		}
+	    printf("Finished running patchsprings\n");
+	}
+
 	// parameters : patch name, output prefix
-	if (mode=='z')
+	if (mode=="z")
 	{
 		if (argc != 5)
 		{

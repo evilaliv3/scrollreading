@@ -347,6 +347,102 @@ float EvaluateState(AlignmentMap *am, std::map<int,Patch> *patches,
 	return score;
 }
 
+// Runs the full pipeline for a candidate state: builds effective bad patches,
+// computes visit order, writes alignment order, runs the spring simulation,
+// scores the placement, and updates patch heat from the mismatches found.
+// Returns the score. This is the single expensive operation in the whole
+// algorithm — both calibration sampling and the main loop route through here.
+float EvaluateStateAll(int numComponents, AlignmentMap *am, std::map<int,Patch> *patches,
+                     std::set<int> &state, std::set<int> &badPatches,
+                     std::set<std::pair<int,int>> &manualBadRel,
+                     std::set<int> &patchesInvolved)
+{
+	std::set<int> effectiveBadPatches;
+
+	std::set_union(badPatches.begin(), badPatches.end(),
+	               state.begin(), state.end(),
+	               std::inserter(effectiveBadPatches, effectiveBadPatches.begin()));
+
+	std::vector<std::vector<int>> patchOrders;
+	std::vector<std::vector<std::pair<int,alignment>>> alignmentOrders;
+	std::vector<std::map<int,affineTx>> patchPositionss;
+	std::map<int,std::set<int> > neighbourList;
+
+	MakeVisitOrders(numComponents,am, patches, effectiveBadPatches, manualBadRel,
+	               patchOrders, alignmentOrders, patchPositionss, neighbourList,false,false);
+
+	float score = 0.0;
+	int componentIndex = -1;
+	for(auto &alignmentOrder : alignmentOrders)			   
+	{
+		componentIndex++;
+		std::vector<std::vector<std::string>> alignmentOrderDash;
+
+		for(auto &a : alignmentOrder)
+		{
+			std::vector<std::string> row;
+			auto toStr = [](auto val)
+			{
+				std::ostringstream oss;
+				oss << val;
+				return oss.str();
+			};
+
+			row.push_back(toStr(a.first));
+			row.push_back(toStr((*patches)[a.first].radius));
+			row.push_back(toStr(std::get<0>(a.second)));
+			row.push_back(toStr(std::get<7>(a.second)));
+			row.push_back(toStr(std::get<8>(a.second)));
+			row.push_back(toStr(std::get<9>(a.second)));
+			row.push_back(toStr(std::get<10>(a.second)));
+			row.push_back(toStr(std::get<11>(a.second)));
+			row.push_back(toStr(std::get<12>(a.second)));
+
+			alignmentOrderDash.push_back(std::move(row));
+		}
+	
+		std::unordered_map<int,std::tuple<float,float,float>> patchPositionsXYA;
+	
+		//printf("Running patchsprings...\n");
+		{
+			PatchSpringSimulation pss(QUADMESH_SIZE,OUTPUT_DIR,componentIndex,false);
+
+			pss.loadPatchVolCoords(OUTPUT_DIR "/patchVolCoords.csv");
+
+			//printf("Loading patches for patchsprings...\n");
+			pss.loadPatches(alignmentOrderDash, patches->size());
+
+			//printf("Running patchsprings...\n");
+			pss.run(50);
+			//printf("Finished patchsprings...\n");
+	
+	        //printf("Finished running patchsprings\n");
+
+
+	        // Get patch positions from pss and set them in *patches
+		    for (auto i : patchOrders[componentIndex])
+		    {
+				(*patches)[i].UnsetPosition();
+				float x,y,angle;
+				pss.GetPatchPosition(i,x,y,angle);
+			
+				patchPositionsXYA[i]=std::tuple<float,float,float>(x,y,angle);
+			
+			//printf("%d %f %f %f\n",i,x,y,angle);
+			}
+	
+	
+			std::set<int> patchesToColour;
+			std::set<std::pair<int,int>> manualGoodRel;
+	
+			score += ScorePlacementAreaAndIncon(am, patches, patchPositionsXYA,patchOrders[componentIndex], patchesToColour,
+	                              manualGoodRel, patchesInvolved, 30, 10, false, false);
+		}
+	}
+	
+	return score;
+}
+
 // Returns T0 such that the mean acceptance probability over the sampled
 // negative deltas is approximately targetAcceptance (e.g. 0.5).
 float CalibrateT0(const std::vector<float> &negativeDeltas, float targetAcceptance = 0.5f)
@@ -567,89 +663,151 @@ void Anneal(AlignmentMap *am, std::map<int,Patch> *patches, std::vector<int> pat
 	               patchOrder, alignmentOrder, patchPositions, neighbourList,true);
 	}
 }
-/*
-void Anneal(AlignmentMap *am, std::map<int,Patch> *patches, std::vector<int> patchNums, std::set<int> badPatches, std::set<std::pair<int,int>> manualBadRel, std::set<int> badBridges, int iterations)
+
+void AnnealAll(int numComponents,AlignmentMap *am, std::map<int,Patch> *patches, std::vector<int> patchNums,
+            std::set<int> badPatches, std::set<std::pair<int,int>> manualBadRel,
+            std::set<int> badBridges, int iterations, int N, float initT0=-1.0)
 {
 	std::set<int> currentState;
 	std::set<int> newState;
-
 	LoadAnnealState(currentState);
-
 	std::map<int,double> patchHeat;
 	std::mt19937 rng(std::random_device{}());
-
 	for(auto i : badBridges)
 	{
 		patchHeat[i]=10.0;
 	}
-	
+
 	int maxIters = iterations;
+	
+	
+	// ---- Calibration pass (serial) ----
+	std::set<int> patchesInvolved;
 
-	// ---- Calibration pass ----
-	printf("Calibrating T0...\n");
-	float baselineScore = EvaluateState(am, patches, currentState, badPatches,
-	                                     manualBadRel, patchHeat);
+    float T0;
 
-	std::vector<float> negativeDeltas;
-	int numCalibrationSamples = 8;
-	for (int i = 0; i < numCalibrationSamples; i++)
+	float baselineScore = EvaluateStateAll(numComponents,am, patches, currentState, badPatches,
+											 manualBadRel, patchesInvolved);
+	
+	if (initT0==-1)
 	{
-		std::set<int> trialState = currentState;
-		MutateState(trialState, patchNums, badPatches, patchHeat, 5, rng);
-
-		float trialScore = EvaluateState(am, patches, trialState, badPatches,
-		                                  manualBadRel, patchHeat);
-
-		float delta = trialScore - baselineScore;
-		printf("Calibration sample %d: delta=%f\n", i, delta);
-		if (delta < 0.0f)
-			negativeDeltas.push_back(delta);
+		printf("Calibrating T0...\n");
+		std::vector<float> negativeDeltas;
+		int numCalibrationSamples = 8;
+		for (int i = 0; i < numCalibrationSamples; i++)
+		{
+			patchesInvolved.clear();
+			
+			std::set<int> trialState = currentState;
+			MutateState(trialState, patchNums, badPatches, patchHeat, 20, rng);
+			float trialScore = EvaluateStateAll(numComponents,am, patches, trialState, badPatches,
+											  manualBadRel, patchesInvolved);
+			float delta = trialScore - baselineScore;
+			printf("Calibration sample %d: delta=%f\n", i, delta);
+			if (delta < 0.0f)
+				negativeDeltas.push_back(delta);
+		}
+		T0 = CalibrateT0(negativeDeltas, 0.5f);
+	    printf("Calibrated T0 = %f (from %zu negative samples)\n", T0, negativeDeltas.size());
 	}
-
-	float T0 = CalibrateT0(negativeDeltas, 0.5f);
-	printf("Calibrated T0 = %f (from %zu negative samples)\n", T0, negativeDeltas.size());
-
+	else
+	{
+		T0 = initT0;
+	}
+	
 	// ---- Main loop ----
-	float currentScore = baselineScore, score = 0;
+	float currentScore = baselineScore;
 	std::set<int> bestState = currentState;
 	float bestScore = currentScore;
-
 	std::vector<float> scoreLog, currentScoreLog, stateLength;
 
+	std::vector<CandidateResult> candidates(N);
+
+	int acceptedCount = 0;
+	
 	for(int iters = 0; iters<maxIters; iters++)
-	{
-		std::cout << "-------- Annealing iteration " << iters << " : Best score=" << bestScore << ", state size=" << (int)bestState.size() << " --------" << std::endl;
-		newState = currentState;
-
-		if (iters != 0)
+	{		
+		if (acceptedCount>=12)
 		{
-			MutateState(newState, patchNums, badPatches, patchHeat, 5, rng);
+			T0=T0*0.75;
+			acceptedCount=0;
 		}
-
-		score = EvaluateState(am, patches, newState, badPatches, manualBadRel, patchHeat);
-
-		printf("State size = %d, score = %f\n",(int)newState.size(),score);
-
+		
 		float T = TemperatureAt(iters, maxIters, T0);
 
-		if (iters==0 || Accept(score - currentScore, T, rng))
+		std::cout << "-------- Annealing iteration " << iters << ", T=" << T << " : Best score=" << bestScore
+		           << ", state size=" << (int)bestState.size() << " --------" << std::endl;
+
+		// Draw N seeds sequentially from the master RNG so each thread gets its
+		// own independent, reproducible generator (std::mt19937 is not thread-safe
+		// to share across threads).
+		std::vector<unsigned int> seeds(N);
+		for(int n=0; n<N; n++)
+			seeds[n] = rng();
+
+		#pragma omp parallel for schedule(dynamic)
+		for(int n=0; n<N; n++)
 		{
-			printf("Accepted (T=%f)\n", T);
-			currentScore = score;
-			currentState = newState;
+			std::mt19937 localRng(seeds[n]);
+			std::set<int> localState = currentState;
+			if (iters != 0)
+			{
+				#pragma omp critical(mutate_state)
+				{
+					//MutateState(localState, patchNums, badPatches, patchHeat, 15*(T/T0)*0+1, localRng);
+					MutateState(localState, patchNums, badPatches, patchHeat, 15*(T/T0)+1, localRng);
+				}
+			}
+
+			std::set<int> localPatchesInvolved;
+			// NOTE: EvaluateState needs a variant that fills patchesInvolved
+			// instead of mutating patchHeat internally, so it's safe to call
+			// concurrently (concurrent reads of patchHeat are fine, concurrent
+			// writes are not).
+			float localScore = EvaluateStateAll(numComponents,am, patches, localState, badPatches,
+			                                  manualBadRel, localPatchesInvolved);
+
+			candidates[n].state = std::move(localState);
+			candidates[n].score = localScore;
+			candidates[n].patchesInvolved = std::move(localPatchesInvolved);
 		}
 
-		if (score > bestScore)
+		// We don't want to just pick the best of the N candidates or this would reduce
+		// the smoothing that simulated annealing depends on - it would be the same as reducing the temperature.
+		// Instead we try accepting each one in turn
+		
+		for(int n=0; n<N; n++)
 		{
-			bestScore = score;
-			bestState = newState;
-		}
+			DecayPatchHeat(patchHeat);
+			UpdatePatchHeat(patchHeat, candidates[n].patchesInvolved);
 
-		scoreLog.push_back(score);
-		currentScoreLog.push_back(currentScore);
-		stateLength.push_back(newState.size());
+			if ((iters==0 && n==0) || Accept(candidates[n].score - currentScore, T, rng))
+		    {
+			    printf("Accepted %d (T=%f)\n",n,T);
+			    currentScore = candidates[n].score;
+			    currentState = candidates[n].state;
+				
+				acceptedCount++;
+		    }
+			else
+			{
+				acceptedCount = 0;
+			}
+			
+		    if (candidates[n].score > bestScore)
+		    {
+			    bestScore = candidates[n].score;
+			    bestState = candidates[n].state;
+		    }
+		    scoreLog.push_back(candidates[n].score);
+		    currentScoreLog.push_back(currentScore);
+		    stateLength.push_back(candidates[n].state.size());
+
+			printf("State size = %d, score = %f\n",
+		       (int)candidates[n].state.size(), candidates[n].score);
+
+		}
 	}
-
 	{
 		std::ofstream os(OUTPUT_DIR "/annealStats.csv");
 		for(int i = 0; i<(int)scoreLog.size(); i++)
@@ -657,157 +815,30 @@ void Anneal(AlignmentMap *am, std::map<int,Patch> *patches, std::vector<int> pat
 			os << scoreLog[i] << "," << currentScoreLog[i] << "," << stateLength[i] << std::endl;
 		}
 	}
-	
+
 	printf("Best score = %f\n", bestScore);
 	{
 		std::ofstream os(OUTPUT_DIR "/annealState_out.csv");
-		
 		for(auto i : bestState)
 		{
 			os << i << std::endl;
 		}
 	}
 
-}
-*/
-/*
-void Anneal(void)
-{
-	AlignmentMap *am = new AlignmentMap;
-	std::map<int,Patch> *patches = new std::map<int,Patch>;
-	
-	printf("Loading patches and relationships...\n");
-	LoadPatchesAndRelationships(patches,am,PATCH_LIMIT);
-
-	AugmentAlignmentMap(*am);
-
-	std::vector<int> patchNums;
-	for(auto &i : *patches)
-		patchNums.push_back(i.first);
-	
-	std::set<int> badPatches;
-	std::set<std::pair<int,int>> manualBadRel;
-
-	LoadBadPatches(badPatches,manualBadRel);
-
-	// a state vector is a set of additional bad patches
-	std::set<int> currentState,newState,bestState;
-
-	LoadAnnealState(currentState);
-	
-	std::map<int,double> patchHeat;      // NEW: persists across iterations
-	std::mt19937 rng(std::random_device{}());  // NEW: proper RNG for discrete_distribution
-	
-	float currentScore=0,score=0,bestScore=0;
-	
-	std::vector<float> scoreLog,currentScoreLog;
-	
-	int maxIters = 2000;
-	for(int iters = 0; iters<maxIters; iters++)
+	// Show the output from visit order - useful to see sizes of components.
 	{
-		newState = currentState;
-		
-		if (iters != 0)
-		{			
-			MutateState(newState,patchNums,badPatches,patchHeat,1+(10*(maxIters-iters))/maxIters,rng);  // CHANGED
-		}
-		
 		std::set<int> effectiveBadPatches;
-		
+
 		std::set_union(badPatches.begin(), badPatches.end(),
-					   newState.begin(), newState.end(),
-                       std::inserter(effectiveBadPatches, effectiveBadPatches.begin()));
-					   
+					bestState.begin(), bestState.end(),
+					std::inserter(effectiveBadPatches, effectiveBadPatches.begin()));
+
 		std::vector<int> patchOrder;
 		std::vector<std::pair<int,alignment>> alignmentOrder;
 		std::map<int,affineTx> patchPositions;
 		std::map<int,std::set<int> > neighbourList;
-		
-		MakeVisitOrder(am,patches,effectiveBadPatches,manualBadRel,patchOrder,alignmentOrder,patchPositions,neighbourList);
 
-		{
-			ofstream os(OUTPUT_DIR "/alignmentorder.txt");
-			
-			for(auto &a : alignmentOrder)
-			{
-				os << a.first << " "
-				   << (*patches)[a.first].radius << " "			
-				   << std::get<0>(a.second) << " "
-				   << std::get<7>(a.second) << " "
-				   << std::get<8>(a.second) << " "
-				   << std::get<9>(a.second) << " "
-				   << std::get<10>(a.second) << " "
-				   << std::get<11>(a.second) << " "
-				   << std::get<12>(a.second) << " "
-				   << endl;
-			}
-		}
-	
-	    printf("Running patchsprings...\n");
-		{
-			PatchSpringSimulation pss(QUADMESH_SIZE,OUTPUT_DIR);
-			
-			pss.loadPatchVolCoords(OUTPUT_DIR "/patchVolCoords.csv");
-			
-			std::vector<std::vector<std::string>> alignmentOrderDash;
-			{
-				std::ifstream f(OUTPUT_DIR "/alignmentorder.txt");
-				if (!f) {
-					std::cerr << "Could not open alignmentorder.txt\n";
-				}
-				std::string line;
-				while (std::getline(f, line)) {
-					alignmentOrderDash.push_back(splitOnSpaceDropLast(line));
-				}
-			}
-
-			printf("Loading patches for patchsprings...\n");
-			pss.loadPatches(alignmentOrderDash, patches->size());
-			
-			printf("Running patchsprings...\n");
-		    pss.run(50);
-			printf("Finished patchsprings...\n");
-
-		}
-	    printf("Finished running patchsprings\n");
-		
-		std::set<int> patchesToColour;
-		std::set<std::pair<int,int>> manualGoodRel;
-		std::set<int> patchesInvolved;
-		
-		score = ScorePlacement(am, patches, patchOrder, patchesToColour, manualGoodRel, patchesInvolved, 30,10,false);
-
-		UpdatePatchHeat(patchHeat, patchesInvolved);  // NEW
-		
-		printf("Score = %f\n",score);
-	
-		if (iters==0 || Accept(score,currentScore,iters,maxIters,T0,rng))
-		{
-			printf("New best score\n");
-			currentScore = score;
-			currentState = newState;
-		}
-		
-		if (iters==0 || score<bestScore)
-		{
-			bestScore = score;
-			bestState = newState;
-		}
-		
-        scoreLog.push_back(score);	
-        currentScoreLog.push_back(currentScore);	
-	}
-	
-	printf("Scores:\n");
-	for(int i = 0; i<scoreLog.size(); i++)
-	{
-		printf("%f,%f\n",scoreLog[i],currentScoreLog[i]);
-	}
-	
-	printf("State with best score (%f):\n",bestScore);
-	for(auto i : bestState)
-	{
-		printf("%d\n",i);
+		MakeVisitOrder(am, patches, effectiveBadPatches, manualBadRel,
+	               patchOrder, alignmentOrder, patchPositions, neighbourList,true);
 	}
 }
-*/

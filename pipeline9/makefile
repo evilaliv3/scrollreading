@@ -2,13 +2,16 @@ CC=g++
 CFLAGS=-O3 -Wall -fopenmp
 LFLAGS=-lblosc2 -ltiff -L/usr/local/lib -I/usr/local/include
 
-simpaper10: common_types.o patch_generator.o simpaper10.o zarr_1.o zarr_1_b700.o bigpatch.o align_patches.o erasepoints.o badpatchfinder.o zarr_show2_u8.o sliceanimrender.o position_patches.o calcvectorfield.o patchcolourkey.o PatchSpringSimulation.o anneal.o visitorder.o scoreplacement.o
+simpaper10: common_types.o patch_generator.o simpaper10.o zarr_1.o zarr_1_b700.o bigpatch.o align_patches.o erasepoints.o badpatchfinder.o zarr_show2_u8.o sliceanimrender.o position_patches.o calcvectorfield.o patchcolourkey.o PatchSpringSimulation.o anneal.o visitorder.o scoreplacement.o omissiontest.o
 	$(CC) -o $@ $^ $(CFLAGS) $(LFLAGS)
 
 PatchSpringSimulation.o: PatchSpringSimulation.cpp PatchSpringSimulation.hpp
 	$(CC) -c $< $(CFLAGS)
 
 anneal.o: anneal.cpp anneal.h visitorder.h scoreplacement.h PatchSpringSimulation.cpp
+	$(CC) -c $< $(CFLAGS)
+
+omissiontest.o: omissiontest.cpp omissiontest.h visitorder.h scoreplacement.h PatchSpringSimulation.cpp
 	$(CC) -c $< $(CFLAGS)
 
 visitorder.o: visitorder.cpp visitorder.h position_patches.h
@@ -47,7 +50,7 @@ common_types.o: common_types.cpp common_types.h vec3.h
 patch_generator.o: patch_generator.cpp patch_generator.h parameters.h common_types.h vec3.h zarr_1.h calcvectorfield.h
 	$(CC) -c $< $(CFLAGS)
 
-simpaper10.o: simpaper10.cpp badpatchfinder.h erasepoints.h align_patches.h patch_generator.h sliceanimrender.h patchcolourkey.h bigpatch.h common_types.h vec3.h parameters.h PatchSpringSimulation.hpp visitorder.h
+simpaper10.o: simpaper10.cpp badpatchfinder.h erasepoints.h align_patches.h patch_generator.h sliceanimrender.h patchcolourkey.h bigpatch.h common_types.h vec3.h parameters.h PatchSpringSimulation.hpp visitorder.h anneal.h omissiontest.h
 	$(CC) -c $< $(CFLAGS)
 	
 align_patches.o : align_patches.cpp align_patches.h bigpatch.h common_types.h parameters.h
@@ -69,6 +72,11 @@ render_from_zarr6: render_from_zarr6.o bigpatch.o common_types.o
 render_from_zarr6.o: render_from_zarr6.cpp bigpatch.h zarr_4.c
 	$(CC) -c $< $(CFLAGS)
 
+render_from_zarr6_uint16: render_from_zarr6_uint16.o bigpatch.o common_types.o
+	$(CC) -o $@ $^ $(CFLAGS) $(LFLAGS)
+	
+render_from_zarr6_uint16.o: render_from_zarr6_uint16.cpp bigpatch.h zarr_4.c
+	$(CC) -c $< $(CFLAGS)
 	
 vectorfieldtest: vectorfieldtest.o calcvectorfield.o zarr_1.o
 	$(CC) -o $@ $^ $(CFLAGS) $(LFLAGS)

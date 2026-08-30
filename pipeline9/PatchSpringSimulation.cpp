@@ -29,10 +29,11 @@ std::vector<std::string> splitOnSpaceDropLast(const std::string& line)
 // Construction
 // ------------------------------------------------------------------------
 
-PatchSpringSimulation::PatchSpringSimulation(double quadmeshSize, std::string outputDir, bool writePatchPositions)
+PatchSpringSimulation::PatchSpringSimulation(double quadmeshSize, std::string outputDir, int instanceNumber, bool writePatchPositions)
     : quadmeshSize_(quadmeshSize), writePatchPositions(writePatchPositions),
       radiusFactor_(quadmeshSize / 2.0),
-      outputDir_(std::move(outputDir)) {}
+      outputDir_(std::move(outputDir)),
+	  instanceNumber_(instanceNumber) {}
 
 // ------------------------------------------------------------------------
 // Math helpers
@@ -229,7 +230,13 @@ void PatchSpringSimulation::loadPatchVolCoords(const std::string& filename) {
 
 void PatchSpringSimulation::savePatches() const {
     //std::cout << "Saving positions...\n";
-    std::ofstream f(outputDir_ + "/patchPositions.txt");
+	std::ostringstream oss;
+	oss << outputDir_ << "/patchPositions";
+	if (instanceNumber_ != -1)
+		oss << "_" << instanceNumber_;
+	oss << ".txt";
+	
+    std::ofstream f(oss.str());
     if (f) {
         for (int patchNum : patchInsertionOrder_) {
             auto it = patchIndexLookup_.find(patchNum);

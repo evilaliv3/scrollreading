@@ -31,7 +31,7 @@ public:
     using Transform = std::array<double, 6>;
 
     explicit PatchSpringSimulation(double quadmeshSize,
-                                    std::string outputDir, bool writePatchPositions = true);
+                                    std::string outputDir, int instanceNumber = -1, bool writePatchPositions = true);
     virtual ~PatchSpringSimulation() = default;
 
     // ---- Setup -------------------------------------------------------
@@ -120,6 +120,8 @@ private:
 
     void move();
 
+	int instanceNumber_;
+	
     // ---- State ----------------------------------------------------------
     std::vector<Patch> patches_;
     std::vector<Velocity> patchVel_;

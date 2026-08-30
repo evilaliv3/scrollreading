@@ -10,14 +10,11 @@
 #include "parameters.h"
 #include "position_patches.h"
 
-struct ComponentInfo {
-    int size;
-    int minVertex;
-};
 
-std::vector<ComponentInfo> getComponents(const std::map<int, std::set<int>>& neighbourList)
+// The pairs contain size, minVertex
+std::vector<std::pair<int,int>> getComponents(const std::map<int, std::set<int>>& neighbourList)
 {
-    std::vector<ComponentInfo> components;
+    std::vector<std::pair<int,int>> components;
     std::set<int> globalVisited;
 
     for (auto& [vertex, neighbours] : neighbourList)
@@ -92,14 +89,14 @@ void MakeVisitOrder(AlignmentMap *am, std::map<int,Patch> *patches,std::set<int>
 			}
 		}
 
-		std::vector<ComponentInfo> components = getComponents(neighbourList);
+		std::vector<std::pair<int,int>> components = getComponents(neighbourList);
 		
 		if (showSize)
 		{
 			printf("Size and min vertex of components\n");
 			for(auto &ci : components)
 			{
-				printf("%d : %d\n",ci.size,ci.minVertex);
+				printf("%d : %d\n",ci.first,ci.second);
 			}
 		}
 
@@ -141,4 +138,120 @@ void MakeVisitOrder(AlignmentMap *am, std::map<int,Patch> *patches,std::set<int>
 		//printf("Producing alignment order...\n");
 
 		PositionPatches(patches,*am,patchOrder,patchPositions,alignmentOrder,manualBadRel);
+}
+
+// version of MakeVisitOrder that will output data for the N largest components...
+int MakeVisitOrders(int N, AlignmentMap *am, std::map<int,Patch> *patches,std::set<int> &badPatches,std::set<std::pair<int,int>> &manualBadRel, std::vector< std::vector<int>> &patchOrders, std::vector<std::vector<std::pair<int,alignment>>> &alignmentOrders,std::vector<std::map<int,affineTx>> &patchPositionss, std::map<int,std::set<int> > &neighbourList, bool showSize=false, bool saveOutput = true)
+{
+		int minPatchInNeighbourList = -1;
+		
+		//printf("Constructing neighbour list\n");
+		for(auto &a : *am)
+		{
+			int patch1 = a.first;
+		
+			if (badPatches.count(patch1)==0)
+			{
+				// Iterate over alignments
+				for(auto al : a.second)
+				{	
+					int patch2 = std::get<0>(al);
+
+					if (badPatches.count(patch2)==0 && manualBadRel.count(std::pair<int,int>(patch1,patch2))==0 && manualBadRel.count(std::pair<int,int>(patch2,patch1))==0)
+					{
+						if (neighbourList.count(patch1)==0)
+							neighbourList[patch1] = std::set<int>();
+						if (neighbourList.count(patch2)==0)
+							neighbourList[patch2] = std::set<int>();
+						
+						neighbourList[patch1].insert(patch2);
+						neighbourList[patch2].insert(patch1);
+						
+						if (minPatchInNeighbourList==-1 || patch1<minPatchInNeighbourList)
+							minPatchInNeighbourList = patch1;
+						if (minPatchInNeighbourList==-1 || patch2<minPatchInNeighbourList)
+							minPatchInNeighbourList = patch2;
+					}
+				}
+			}
+		}
+
+		std::vector<std::pair<int,int>> components = getComponents(neighbourList);
+	
+		// sort by component size
+		std::sort(components.begin(),components.end(),std::greater<>());
+		
+		if (showSize)
+		{
+			printf("Size and min vertex of components\n");
+			for(auto &ci : components)
+			{
+				printf("%d : %d\n",ci.first,ci.second);
+			}
+		}
+
+		int noOfCompToOutput = (N>components.size())?components.size():N;
+		
+		//printf("Calculating patch order...\n");
+
+		for(int compIndex = 0; compIndex < noOfCompToOutput; compIndex++)
+		{
+			std::set<int> visited;
+			int currentVisit = components[compIndex].second;
+			std::set<int> toVisitSet;
+		
+			std::vector<int> patchOrder;
+			
+			while(true)
+			{
+				visited.insert(currentVisit);
+
+				patchOrder.push_back(currentVisit);
+			
+				std::set_difference(neighbourList[currentVisit].begin(),
+								neighbourList[currentVisit].end(),
+								visited.begin(),
+								visited.end(),
+								std::inserter(toVisitSet,toVisitSet.begin()));
+			
+				if (toVisitSet.size()==0)
+					break;
+			
+				auto nh = toVisitSet.extract(toVisitSet.begin());
+				currentVisit = nh.value();
+			}
+
+			patchOrders.push_back(patchOrder);
+			
+			if (saveOutput)
+			{
+				std::ofstream os(OUTPUT_DIR "/patchorder.csv");
+				for (auto i : patchOrder)
+				{
+					os << i << std::endl;
+				}
+			}
+			
+			std::vector<std::pair<int,alignment>> alignmentOrder;
+			std::map<int,affineTx> patchPositions;
+			
+			PositionPatches(patches,*am,patchOrder,patchPositions,alignmentOrder,manualBadRel);
+			
+			alignmentOrders.push_back(alignmentOrder);
+			patchPositionss.push_back(patchPositions);
+
+		}
+
+		if (saveOutput)
+		{
+			std::ofstream os(OUTPUT_DIR "/patchorders.csv");
+			for (auto &i : patchOrders)
+			{
+				os << "NEW" << endl;
+				for(auto j : i)
+					os << j << std::endl;
+			}
+		}
+		
+	return noOfCompToOutput;
 }

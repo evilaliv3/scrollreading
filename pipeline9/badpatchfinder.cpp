@@ -442,20 +442,20 @@ void BadPatchFinder::FindBadPatchesGeneral(AlignmentMap &am, std::map<int,Patch>
 	}
 }
 
-void BadPatchFinder::FindNeighbourProblems(std::map<int,std::set<int> > &neighbourList, std::map<int,Patch> *patches, std::set<int> badBridges, std::map<int,int> &newBadBridges,std::map<int,affineTx> &patchPositions)
+void BadPatchFinder::FindNeighbourProblems(std::map<int,std::set<int> > &neighbourList, std::map<int,Patch> *patches, std::set<int> badBridges, std::map<int,int> &newBadBridges, std::vector<int> &patchOrder, std::map<int,affineTx> &patchPositions)
 {
-	for(auto &nl : neighbourList)
+	for(auto p : patchOrder)
 	{
-		if (badBridges.count(nl.first)!=0)
+		if (badBridges.count(p)!=0)
 			continue;
 		
 		float x1,y1,angle1;
 		
-		AffineTxToXYA(patchPositions[nl.first],x1,y1,angle1);
+		AffineTxToXYA(patchPositions[p],x1,y1,angle1);
 		
 		std::vector<std::tuple<float,float,float,int>> neighbourPositions;
 		
-		for(auto &n : nl.second)
+		for(auto &n : neighbourList[p])
 		{
 			if (badBridges.count(n)!=0)
 				continue;
@@ -474,16 +474,16 @@ void BadPatchFinder::FindNeighbourProblems(std::map<int,std::set<int> > &neighbo
 				float d = Distance(std::get<0>(neighbourPositions[i]),std::get<1>(neighbourPositions[i]),std::get<0>(neighbourPositions[j]),std::get<1>(neighbourPositions[j]));
 				
 				// Max possible distance that these neighbours of A can be separated by is the diameter of A + the radius of each neighbour
-				float maxPossibleDist = 2.0*(*patches)[nl.first].radius+std::get<2>(neighbourPositions[i])+std::get<2>(neighbourPositions[j]);
+				float maxPossibleDist = 2.0*(*patches)[p].radius+std::get<2>(neighbourPositions[i])+std::get<2>(neighbourPositions[j]);
 				
 				if (d>maxPossibleDist)
 				{
-					printf("Bad spanning patches: %d,%d,%d : %f,%f\n",nl.first,std::get<3>(neighbourPositions[i]),std::get<3>(neighbourPositions[j]),d,maxPossibleDist);
+					printf("Bad spanning patches: %d,%d,%d : %f,%f\n",p,std::get<3>(neighbourPositions[i]),std::get<3>(neighbourPositions[j]),d,maxPossibleDist);
 					
-					if (newBadBridges.count(nl.first)==0)
-						newBadBridges[nl.first]=0;
+					if (newBadBridges.count(p)==0)
+						newBadBridges[p]=0;
 					
-					newBadBridges[nl.first]++;
+					newBadBridges[p]++;
 				}
 			}
 		}			
