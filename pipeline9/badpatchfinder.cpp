@@ -351,14 +351,17 @@ void BadPatchFinder::FindBadPatchesGeneral(AlignmentMap &am, std::map<int,Patch>
 		std::vector<int> currentSequence;
 		std::set<int> currentSequencePatches;
 		bool hasBadPatch = false, hasRepeat = false, hasNoGeometry = false;
+		// The position at which this chain stopped being extendable. length-1 means it
+		// was built whole, and the odometer then advances its last index as before.
+		int deadDepth = length-1;
 				
 		// output a patch sequence only if it contains no bad patches
 		int currentPatch = indexedPatches[indices[0]];
-		if (badPatches.count(currentPatch)!=0) hasBadPatch=true;
+		if (badPatches.count(currentPatch)!=0) { hasBadPatch=true; deadDepth=0; }
 		if (patches->count(currentPatch)==0) hasNoGeometry=true;
 		currentSequence.push_back(currentPatch);
 		currentSequencePatches.insert(currentPatch);
-		for(int i = 1; i<length; i++)
+		for(int i = 1; i<length && !hasBadPatch; i++)
 		{
 			if (indices[i]<(int)am[currentPatch].size())
 			{
@@ -366,11 +369,13 @@ void BadPatchFinder::FindBadPatchesGeneral(AlignmentMap &am, std::map<int,Patch>
 				if (currentSequencePatches.count(currentPatch)!=0)
 				{
 					hasRepeat=true;
+					deadDepth=i;
 					break;
 				}
 				if (badPatches.count(currentPatch)!=0)
 				{
 					hasBadPatch=true;
+					deadDepth=i;
 					break;
 				}
 				if (patches->count(currentPatch)==0) hasNoGeometry=true;
@@ -401,9 +406,18 @@ void BadPatchFinder::FindBadPatchesGeneral(AlignmentMap &am, std::map<int,Patch>
 			}
 		}
 		
-		// increment onto the next sequence of patches
+		// increment onto the next sequence of patches.
+		//
+		// Every tuple that shares indices[0..deadDepth] with this one contains the same
+		// repeated patch, or the same bad patch, or the same bad first patch, and is
+		// rejected for the same reason. Advancing at deadDepth instead of at length-1
+		// skips them all. The indices below it go back to zero, which is where the
+		// carry below would have left them. When the chain was built whole, deadDepth is
+		// length-1 and this is the odometer exactly as it was.
+		for(int i = deadDepth+1; i<length; i++)
+			indices[i]=0;
 		bool advanceToNextIndex = true;
-		for(int indexToInc=length-1; indexToInc>=0 && advanceToNextIndex; indexToInc--)
+		for(int indexToInc=deadDepth; indexToInc>=0 && advanceToNextIndex; indexToInc--)
 		{
 			advanceToNextIndex = false;
 			if (indexToInc==0)
