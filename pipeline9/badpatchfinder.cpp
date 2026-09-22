@@ -543,9 +543,22 @@ void BadPatchFinder::FindBadPatchesGeneral(AlignmentMap &am, std::map<int,Patch>
 	// cover as in FindBadPatches and goes through the same function. Longer chains are a
 	// hypergraph and the loop below is left as it was.
 
+	// The frequency table below was a std::map<int,int> built from nothing on every
+	// pass of the loop, which allocates and frees one red black node per distinct
+	// patch per pass, and this loop runs once per patch it condemns. Patch numbers
+	// are small non negative integers, so one vector indexed by patch number holds
+	// the same counts for every pass with no allocation at all. It is cleared at the
+	// top of each pass, which is what building a new map did. The scan order and the
+	// comparison are untouched, so the patch chosen on each pass is the same patch.
+	int highestPatchNumber = -1;
+	for(auto &bpt : badPatchTuples)
+		for(auto i : bpt)
+			if (i>highestPatchNumber) highestPatchNumber = i;
+	std::vector<int> freqCount(highestPatchNumber+1,0);
+
 	while(badPatchTuples.size()>0)
 	{
-		std::map<int,int> freqCount;
+		std::fill(freqCount.begin(),freqCount.end(),0);
 
 		int highestFreq = -1;
 		int highestPatch = -1;
@@ -553,8 +566,6 @@ void BadPatchFinder::FindBadPatchesGeneral(AlignmentMap &am, std::map<int,Patch>
 		{
 			for(auto i : bpt)
 			{
-				if (freqCount.count(i) == 0)
-					freqCount[i] = 0;
 				freqCount[i]++;
 			
 				if (highestFreq==-1 || freqCount[i]>highestFreq)
