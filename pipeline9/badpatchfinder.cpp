@@ -335,16 +335,27 @@ void BadPatchFinder::FindBadPatchesGeneral(AlignmentMap &am, std::map<int,Patch>
 
 	std::vector<std::vector<int>> patchSequences;
 	
+	// A patch can be named as the target of an alignment and have no geometry on disk:
+	// the patches map is keyed by the patch files that were loaded, while the alignment
+	// map keeps every id ever named as a target, because AugmentAlignmentMap inserts the
+	// target of an alignment as a key without checking that the target was loaded. A chain
+	// assembled through such an id has no geometry to place, so it is refused here, where
+	// chains are built, and not at the call that would ask for that geometry. What is
+	// refused is counted and printed below: a run that drops chains says so.
+	long chainsWithoutGeometry = 0;
+	std::set<int> patchesWithoutGeometry;
+	
 	bool done = false;
 	while(!done)
 	{
 		std::vector<int> currentSequence;
 		std::set<int> currentSequencePatches;
-		bool hasBadPatch = false, hasRepeat = false;
+		bool hasBadPatch = false, hasRepeat = false, hasNoGeometry = false;
 				
 		// output a patch sequence only if it contains no bad patches
 		int currentPatch = indexedPatches[indices[0]];
 		if (badPatches.count(currentPatch)!=0) hasBadPatch=true;
+		if (patches->count(currentPatch)==0) hasNoGeometry=true;
 		currentSequence.push_back(currentPatch);
 		currentSequencePatches.insert(currentPatch);
 		for(int i = 1; i<length; i++)
@@ -362,6 +373,7 @@ void BadPatchFinder::FindBadPatchesGeneral(AlignmentMap &am, std::map<int,Patch>
 					hasBadPatch=true;
 					break;
 				}
+				if (patches->count(currentPatch)==0) hasNoGeometry=true;
 				currentSequence.push_back(currentPatch);
 				currentSequencePatches.insert(currentPatch);
 			}
@@ -376,7 +388,17 @@ void BadPatchFinder::FindBadPatchesGeneral(AlignmentMap &am, std::map<int,Patch>
 		{
 			// To avoid duplicating sequences, only save those where the first patch is < the last patch
 			if (currentSequence.front() < currentSequence.back())
-				patchSequences.push_back(currentSequence);
+			{
+				if (hasNoGeometry)
+				{
+					chainsWithoutGeometry++;
+					for(int pn : currentSequence)
+						if (patches->count(pn)==0)
+							patchesWithoutGeometry.insert(pn);
+				}
+				else
+					patchSequences.push_back(currentSequence);
+			}
 		}
 		
 		// increment onto the next sequence of patches
@@ -424,6 +446,13 @@ void BadPatchFinder::FindBadPatchesGeneral(AlignmentMap &am, std::map<int,Patch>
 		printf("\n");
 	}
 */
+	printf("Chains refused for a patch with no geometry: length=%d chains=%ld patches=%d\n",
+	       length,chainsWithoutGeometry,(int)patchesWithoutGeometry.size());
+	printf("Patches with no geometry:");
+	for(int pn : patchesWithoutGeometry)
+		printf(" %d",pn);
+	printf("\n");
+
     printf("Iterating over patch sequences\n");
 	
 	// Each sequence is independent of the others. The parallel loop computes only the three
