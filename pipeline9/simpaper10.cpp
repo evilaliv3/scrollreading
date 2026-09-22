@@ -779,18 +779,19 @@ int main(int argc, char *argv[])
 	
 		BadPatchFinder *bpf = new BadPatchFinder();
 		printf("Finding bad patches...\n");
+		{ extern long offGridTotal; offGridTotal = 0; }
 		bpf->FindBadPatches(*am,patches,badPatches,badPatchScores);
 		delete bpf;
 
 		{
-			std::ofstream os(OUTPUT_DIR "/badpatches.csv");
+			std::ofstream os(outPath("/badpatches.csv"));
 			for(auto i : badPatches)
 			{
 				os << i << std::endl;;
 			}
 		}
 		{
-			std::ofstream os(OUTPUT_DIR "/badpatchscores.csv");
+			std::ofstream os(outPath("/badpatchscores.csv"));
 			for(auto i : badPatchScores)
 			{
 				os << std::get<0>(i) << "," << std::get<1>(i) << "," << std::get<2>(i) << std::endl;;
@@ -845,6 +846,8 @@ int main(int argc, char *argv[])
 		std::set_difference(badPatches.begin(), badPatches.end(), round3BadPatches.begin(), round3BadPatches.end(),
                         std::inserter(round4OnlyBadPatches, round4OnlyBadPatches.begin()));
 						
+		{ extern long offGridTotal;
+		  printf("points skipped as off-grid: %ld\n", offGridTotal); }
 		printf("Round 1 bad patches\n");
 		for(auto i : round1BadPatches)
 		{
