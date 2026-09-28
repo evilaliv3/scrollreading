@@ -43,7 +43,7 @@ static int patchLimit(void) { const char *e = getenv("SIMPAPER_PATCH_LIMIT"); re
 // ceiling of 4 left the machine idle (measured 2026-09-11: 186 % of CPU out of 1600 %
 // available). They are set with SIMPAPER_PATCHES and SIMPAPER_CANDIDATES. The default stays
 // the historical one until a pre-registered experiment says otherwise.
-static int patches_in_flight = NUM_THREADS;
+int patches_in_flight = NUM_THREADS;   // read by the relaxation pool to size itself
 static int candidates_per_slot = 2;
 #define MIN_SEED_DISTANCE 600
 

@@ -29,6 +29,7 @@ struct PatchCounters
 	double t_neighbours, t_makepts, t_addpts;
 	long n_precomputed, n_taps, n_failed, n_warmed;
 	long n_neighbour_calls, n_comparisons;
+	long n_relax_par, n_relax_ser, n_relax_points;
 	char pad[64];
 };
 static PatchCounters counters[COUNTERS_MAX] = {};
@@ -49,6 +50,7 @@ void PrintTimers(void)
 	double s_t_neighbours = 0, s_t_makepts = 0, s_t_addpts = 0;
 	long s_n_precomputed = 0, s_n_taps = 0, s_n_failed = 0, s_n_warmed = 0;
 	long s_n_neighbour_calls = 0, s_n_comparisons = 0;
+	long s_par = 0, s_ser = 0, s_pts = 0;
 	for(int q = 0; q < COUNTERS_MAX; q++)
 	{
 		const PatchCounters &c = counters[q];
@@ -58,6 +60,7 @@ void PrintTimers(void)
 		s_n_precomputed += c.n_precomputed; s_n_taps += c.n_taps; s_n_failed += c.n_failed;
 		s_n_warmed += c.n_warmed; s_n_neighbour_calls += c.n_neighbour_calls;
 		s_n_comparisons += c.n_comparisons;
+		s_par += c.n_relax_par; s_ser += c.n_relax_ser; s_pts += c.n_relax_points;
 	}
 	if (s_t_total <= 0) return;
 	printf("\nGROWTH TIMERS: total %.1f s\n", s_t_total);
@@ -80,6 +83,9 @@ void PrintTimers(void)
 			       zarrStoreHits_1, zarrStoreInPlace_1, zarrStoreMisses_1, zarrStoreHeld_1,
 			       zarrStoreHeld_1*7.077888/1024.0);
 	}
+	if (s_par + s_ser)
+		printf("  relaxation steps: %ld in parallel, %ld serial, %.0f active points on average, %.2f us of forces per step\n",
+		       s_par, s_ser, (double)s_pts/(s_par+s_ser), 1e6*s_t_forces/(s_par+s_ser));
 	printf("  rest                             %7.1f s  %5.1f %%\n",
 	       s_t_total-s_t_forces-s_t_setvf-s_t_stress-s_t_newpts,
 	       100*(s_t_total-s_t_forces-s_t_setvf-s_t_stress-s_t_newpts)/s_t_total);
@@ -94,12 +100,227 @@ using namespace std;
 
 #include "patch_generator.h"
 
+// ---------------------------------------------------------------------------------------------
+// The persistent pool behind SIMPAPER_FORCE_THREADS.
+//
+// One pool per PatchGenerator, that is per concurrent patch, created when the generator is and
+// destroyed with it. The workers spin on a generation counter, fall back to yielding and then to
+// sleeping on a condition variable when nothing has been asked of them for a while, so that a
+// slot that is aligning rather than relaxing does not hold cores it is not using.
+//
+// Bit identity. Pass 0 runs ForcesOnPoint over a contiguous block of activeList and keeps its own
+// maximum; pass 1 runs MovePoint over the same block. The per-point code is the code that was
+// there before, called with the same arguments. The maxima are combined afterwards over workers
+// 0, 1, ... in that order, and std::max on floats is exact, so the result does not depend on how
+// the points were divided.
+// ---------------------------------------------------------------------------------------------
+#include <thread>
+#include <atomic>
+#include <mutex>
+#include <condition_variable>
+#include <immintrin.h>
+#include <unistd.h>
+
+#define FORCE_POOL_MAX 16
+
+class PatchGenerator;
+
+class ForcePool
+{
+public:
+	PatchGenerator *owner = nullptr;
+	int nw = 1;                       // workers including the caller
+	int n = 0;                        // active points this step
+	float partMax[FORCE_POOL_MAX];
+
+	std::atomic<unsigned> generation{0};
+	std::atomic<int> finished{0};
+	std::atomic<int> sleepers{0};
+	std::atomic<bool> stopping{false};
+	std::atomic<int> atCount{0};
+	std::atomic<unsigned char> sense{0};
+	// One sense byte per participant, in the pool rather than in thread-local storage: the caller
+	// of a pool is whichever OpenMP thread happens to be running that slot this batch, and it is
+	// not the same one from batch to batch, so a sense kept per thread goes out of step with the
+	// pool and the barrier hangs. Measured the hard way on 2026-09-14.
+	unsigned char wSense[FORCE_POOL_MAX] = {0};
+	std::vector<std::thread> threads;
+	std::mutex m;
+	std::condition_variable cv;
+
+	void start(PatchGenerator *o, int workers);
+	void stop();
+	void run(int n_);                 // called by the owner thread
+	void body(int w, int ph);         // one worker's share of one pass
+	void barrier(int w);
+	void loop(int w);
+	~ForcePool() { stop(); }
+};
+
+extern int patches_in_flight;
+
+// How many threads share one relaxation step. Measured on 2026-09-14 over blocks of three runs of
+// 300 patches, 4 slots: serial 28.676 s, two threads 28.037 s, three 27.872 s, four 27.929 s, so
+// three is where it stops paying, and the whole effect is 2.8 %. It costs 2.5 times the CPU time,
+// because the threads spin while they wait, so the default is taken only when the machine has
+// cores to spare: the chain is also run several processes at a time, and there the right answer is
+// one thread per slot and no pool at all.
+// SIMPAPER_FORCE_THREADS overrides, and 1 turns the pool off entirely.
+static int forcePoolThreads(void)
+{
+	static int decided = -1;
+	if (decided < 0)
+	{
+		const char *e = getenv("SIMPAPER_FORCE_THREADS");
+		if (e) decided = atoi(e);
+		else
+		{
+			long cores = sysconf(_SC_NPROCESSORS_ONLN);
+			if (cores < 1) cores = 1;
+			int slots = patches_in_flight > 0 ? patches_in_flight : 1;
+			decided = (int)(cores / (2L * slots));   // half the machine left for everything else
+			if (decided > 3) decided = 3;            // measured: four is not better than three
+		}
+		if (decided < 1) decided = 1;
+		if (decided > FORCE_POOL_MAX) decided = FORCE_POOL_MAX;
+	}
+	return decided;
+}
+
+static int forcePoolThreshold(void)
+{
+	static int decided = -1;
+	if (decided < 0)
+	{
+		const char *e = getenv("SIMPAPER_FORCE_MIN_POINTS");
+		decided = e ? atoi(e) : 2048;
+	}
+	return decided;
+}
+
+
 #define MARGIN 8 // Don't try to fill near the edges of the volume
 
 #define EXPECTED_DISTANCE(xd,yd) (QUADMESH_SIZE*sqrt(xd*xd+yd*yd))
 
 #define NEIGHBOUR_RADIUS 2
 #define NEIGHBOUR_RADIUS_FLOAT 2.0
+
+
+// --- the pool, out of line because it calls back into PatchGenerator ---------------------------
+
+void ForcePool::body(int w, int ph)
+{
+	// a contiguous block, decided by n and w alone
+	int lo = (int)((long)n * w / nw), hi = (int)((long)n * (w+1) / nw);
+	if (ph == 0)
+	{
+		float mx = 0.0f;
+		for(int ai = lo; ai < hi; ai++)
+			owner->ForcesOnPoint(ai, mx);
+		partMax[w] = mx;
+	}
+	else
+	{
+		for(int ai = lo; ai < hi; ai++)
+			owner->MovePoint(ai);
+	}
+}
+
+void ForcePool::loop(int w)
+{
+	unsigned seen = 0;
+	for(;;)
+	{
+		// Spin first, because a relaxation step is a few microseconds and a sleep costs more than
+		// that. Then yield, then sleep: a slot that is aligning rather than relaxing must not hold
+		// a core for the tens of milliseconds that takes.
+		int spins = 0;
+		while (generation.load(std::memory_order_acquire) == seen)
+		{
+			if (stopping.load(std::memory_order_acquire)) return;
+			if (spins < 20000) { _mm_pause(); spins++; }
+			else if (spins < 40000) { std::this_thread::yield(); spins++; }
+			else
+			{
+				std::unique_lock<std::mutex> lk(m);
+				sleepers.fetch_add(1, std::memory_order_release);
+				cv.wait_for(lk, std::chrono::milliseconds(1));
+				sleepers.fetch_sub(1, std::memory_order_release);
+			}
+		}
+		seen = generation.load(std::memory_order_acquire);
+		if (stopping.load(std::memory_order_acquire)) return;
+		body(w,0);
+		barrier(w);
+		body(w,1);
+		finished.fetch_add(1, std::memory_order_release);
+	}
+}
+
+// A sense-reversing barrier over the nw participants, spun on. It sits between the two passes of
+// one relaxation step, which is where the Jacobi update needs it: no point may move before every
+// force has been read from the positions of the step it belongs to.
+void ForcePool::barrier(int w)
+{
+	unsigned char mySense = (unsigned char)(wSense[w] ^ 1);
+	wSense[w] = mySense;
+	if (atCount.fetch_add(1, std::memory_order_acq_rel) == nw-1)
+	{
+		atCount.store(0, std::memory_order_relaxed);
+		sense.store(mySense, std::memory_order_release);
+	}
+	else
+	{
+		int spins = 0;
+		while (sense.load(std::memory_order_acquire) != mySense)
+		{
+			if (spins < 100000) { _mm_pause(); spins++; }
+			else std::this_thread::yield();
+		}
+	}
+}
+
+void ForcePool::start(PatchGenerator *o, int workers)
+{
+	owner = o;
+	nw = workers;
+	if (nw <= 1) return;
+	for(int w = 1; w < nw; w++)
+		threads.emplace_back([this,w]{ this->loop(w); });
+}
+
+void ForcePool::stop()
+{
+	if (threads.empty()) return;
+	stopping.store(true, std::memory_order_release);
+	generation.fetch_add(1, std::memory_order_release);
+	{ std::lock_guard<std::mutex> lk(m); }
+	cv.notify_all();
+	for(auto &t : threads) if (t.joinable()) t.join();
+	threads.clear();
+}
+
+void ForcePool::run(int n_)
+{
+	n = n_;
+	finished.store(0, std::memory_order_relaxed);
+	generation.fetch_add(1, std::memory_order_release);
+	if (sleepers.load(std::memory_order_acquire) > 0)
+	{
+		std::lock_guard<std::mutex> lk(m);
+		cv.notify_all();
+	}
+	body(0,0);
+	barrier(0);
+	body(0,1);
+	int spins = 0;
+	while (finished.load(std::memory_order_acquire) < nw-1)
+	{
+		if (spins < 200000) { _mm_pause(); spins++; }
+		else std::this_thread::yield();
+	}
+}
 
 void PatchGenerator::MakeActive(int x, int y)
 {
@@ -280,16 +501,30 @@ float PatchGenerator::ForcesAndMove(void)
   float largestForce = 0.0;
 
   double t0 = now();
-  for(int ai = 0; ai<activeListSize; ai++)
-	ForcesOnPoint(ai,largestForce);
+  mine().n_relax_points += activeListSize;
+  if (pool && pool->nw > 1 && activeListSize >= forcePoolThreshold())
+  {
+    mine().n_relax_par++;
+    // The same two loops, over the same points, in the same per-point code, divided into
+    // contiguous blocks. The maxima are combined in worker order, and max is exact.
+    pool->run(activeListSize);
+    for(int w = 0; w < pool->nw; w++)
+      largestForce = std::max(pool->partMax[w], largestForce);
+  }
+  else
+  {
+    mine().n_relax_ser++;
+    for(int ai = 0; ai<activeListSize; ai++)
+      ForcesOnPoint(ai,largestForce);
 
-  for(int ai = 0; ai<activeListSize; ai++)
-	MovePoint(ai);
+    for(int ai = 0; ai<activeListSize; ai++)
+      MovePoint(ai);
+  }
   double t1 = now(); mine().t_forces += t1-t0;
 
   for(int ai = 0; ai<activeListSize; ai++)
-	if (vfToRedo[ai])
-	  SetVectorField(activeList[ai][0],activeList[ai][1]);
+    if (vfToRedo[ai])
+      SetVectorField(activeList[ai][0],activeList[ai][1]);
   mine().t_setvf += now()-t1;
 
   return sqrt(largestForce);
@@ -568,6 +803,14 @@ PatchGenerator::PatchGenerator(const string &surfaceZarrName_) : surfaceZarrName
     activeListSize = 0;	
     surfaceZarr = NULL;   // opened lazily on the first patch, then kept open
     std::memset(stressPage, 0, sizeof(stressPage));
+
+    // One pool per slot, for the life of the run. With SIMPAPER_FORCE_THREADS=1, which is the
+    // default, no thread is created and the relaxation loop is the serial one.
+    if (forcePoolThreads() > 1)
+    {
+        pool = new ForcePool();
+        pool->start(this, forcePoolThreads());
+    }
 }
 
 		
@@ -575,6 +818,7 @@ PatchGenerator::~PatchGenerator(void)
 {
 	// The zarr reader and the vector field calculator stay alive from one patch to the next:
 	// they are released here.
+	if (pool) { pool->stop(); delete pool; pool = NULL; }
 	if (vfc) { delete vfc; vfc = NULL; }
 	if (surfaceZarr) { ZARRClose_1(surfaceZarr); surfaceZarr = NULL; }
 	ClearHighStress();

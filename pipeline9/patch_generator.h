@@ -13,9 +13,16 @@ using namespace std;
 
 #define SHEET_SIZE (MAX_GROWTH_STEPS+5)
 
+class ForcePool;
+
 class PatchGenerator
 {
 	public:
+		// The pool calls these two directly; they were public already, and the pool is a friend
+		// of nothing: it holds a pointer to the generator and calls the same two methods the
+		// serial loop calls.
+		ForcePool *pool = nullptr;
+
         PatchGenerator(const string &surfaceZarrName_);
 		~PatchGenerator(void);
 
