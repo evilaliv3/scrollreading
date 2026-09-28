@@ -36,6 +36,7 @@
 // if this is part of a bigger pipeline that already has the points in
 // memory.
 
+#include "parameters.h"
 #include <tiffio.h>
 
 #include <algorithm>

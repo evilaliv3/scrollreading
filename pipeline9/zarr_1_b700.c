@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <blosc2.h>
+long zarrMissingChunks_1_b700 = 0; // chunks read as zeros because the file was missing
 typedef uint8_t ZARRType_1_b700;
 
 typedef struct {
@@ -154,6 +155,14 @@ int ZARRCheckChunk_1_b700(ZARR_1_b700 *z, int c[3])
 	if (!f)
 	{
 		printf("Did not find file:%s\n",z->location); // Useful to display this message because it often indicates a file naming problem
+		zarrMissingChunks_1_b700++;
+		// The path goes to a list the caller can check upstream: in zarr an absent chunk means
+		// fill_value by definition, so a missing file is only an error when the chunk does exist
+		// in the source the box was copied from.
+		{
+			FILE *ml = fopen(getenv("ZARR_MISSING_LIST") ? getenv("ZARR_MISSING_LIST") : "/dev/null","a");
+			if (ml) { fprintf(ml,"%s\n",z->location); fclose(ml); }
+		}
 
 		memset(z->buffer,0,sizeof(ZARRType_1_b700)*7077888);
 

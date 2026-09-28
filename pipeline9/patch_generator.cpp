@@ -4,13 +4,88 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <vector>
+#include <array>
 #include <set>
 #include <map>
 #include <string>
 #include <algorithm>
+#include <cstring>
+#include <cstdlib>
+#include <ctime>
+
+// Timers, to see where the time inside growth goes. They are instrumentation: they write to
+// stdout and touch no computation. perf is not usable here because perf_event_paranoid is 4 and
+// we are not root.
+#include <omp.h>
+// A7.9: these counters used to be plain globals, incremented inside parallel regions over
+// patches. They affect no stored value, but they make the PRINTOUT unreliable as soon as more
+// than one patch is in flight, and a diagnostic that lies is worse than one that is missing:
+// we rely on these numbers to decide where to optimise.
+// Here there is one per thread, on separate cache lines, summed only when printing.
+#define COUNTERS_MAX 64
+struct PatchCounters
+{
+	double t_forces, t_setvf, t_stress, t_newpts, t_total;
+	double t_neighbours, t_makepts, t_addpts;
+	long n_precomputed, n_taps, n_failed, n_warmed;
+	long n_neighbour_calls, n_comparisons;
+	char pad[64];
+};
+static PatchCounters counters[COUNTERS_MAX] = {};
+static inline PatchCounters &mine() { return counters[omp_get_thread_num() & (COUNTERS_MAX-1)]; }
+long n_hit = 0, n_miss = 0;   // these two are used by calcvectorfield.cpp as well
+
+static inline double now(void)
+{
+	struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
+	return t.tv_sec + t.tv_nsec*1e-9;
+}
+extern "C" long zarrStoreHits_1, zarrStoreMisses_1, zarrStoreHeld_1;
+
+void PrintTimers(void)
+{
+	// sum of the per-thread counters
+	double s_t_forces = 0, s_t_setvf = 0, s_t_stress = 0, s_t_newpts = 0, s_t_total = 0;
+	double s_t_neighbours = 0, s_t_makepts = 0, s_t_addpts = 0;
+	long s_n_precomputed = 0, s_n_taps = 0, s_n_failed = 0, s_n_warmed = 0;
+	long s_n_neighbour_calls = 0, s_n_comparisons = 0;
+	for(int q = 0; q < COUNTERS_MAX; q++)
+	{
+		const PatchCounters &c = counters[q];
+		s_t_forces += c.t_forces; s_t_setvf += c.t_setvf; s_t_stress += c.t_stress;
+		s_t_newpts += c.t_newpts; s_t_total += c.t_total; s_t_neighbours += c.t_neighbours;
+		s_t_makepts += c.t_makepts; s_t_addpts += c.t_addpts;
+		s_n_precomputed += c.n_precomputed; s_n_taps += c.n_taps; s_n_failed += c.n_failed;
+		s_n_warmed += c.n_warmed; s_n_neighbour_calls += c.n_neighbour_calls;
+		s_n_comparisons += c.n_comparisons;
+	}
+	if (s_t_total <= 0) return;
+	printf("\nGROWTH TIMERS: total %.1f s\n", s_t_total);
+	printf("  forces (the two per-point loops) %7.1f s  %5.1f %%\n", s_t_forces, 100*s_t_forces/s_t_total);
+	printf("  SetVectorField (zarr reads)      %7.1f s  %5.1f %%\n", s_t_setvf, 100*s_t_setvf/s_t_total);
+	printf("  MarkHighStress                %7.1f s  %5.1f %%\n", s_t_stress, 100*s_t_stress/s_t_total);
+	printf("  new points                       %7.1f s  %5.1f %%\n", s_t_newpts, 100*s_t_newpts/s_t_total);
+	printf("    MakeNewPoints              %7.1f s  %5.1f %%\n", s_t_makepts, 100*s_t_makepts/s_t_total);
+	printf("    AddNewPoints               %7.1f s  %5.1f %%\n", s_t_addpts, 100*s_t_addpts/s_t_total);
+	printf("    of which HasCloseNeighbour %7.1f s  %5.1f %%   (%ld calls, %.1f comparisons each)\n",
+	       s_t_neighbours, 100*s_t_neighbours/s_t_total, s_n_neighbour_calls,
+	       s_n_neighbour_calls ? (double)s_n_comparisons/s_n_neighbour_calls : 0.0);
+	if (s_n_precomputed) printf("  shared precompute: %ld calls, %ld taps, %ld warmed serially, %ld failed (%.1f %%)\n",
+	       s_n_precomputed, s_n_taps, s_n_warmed, s_n_failed, 100.0*s_n_failed/(s_n_taps-s_n_warmed+1));
+	printf("  vector field cache: %ld hits, %ld computations, %.1f %% hit rate\n",
+	       n_hit, n_miss, 100.0*n_hit/(n_hit+n_miss+1));
+	{
+		if (zarrStoreHits_1 + zarrStoreMisses_1)
+			printf("  shared chunk store: %ld served, %ld decompressed, %ld held (%.1f GB)\n",
+			       zarrStoreHits_1, zarrStoreMisses_1, zarrStoreHeld_1,
+			       zarrStoreHeld_1*7.077888/1024.0);
+	}
+	printf("  rest                             %7.1f s  %5.1f %%\n",
+	       s_t_total-s_t_forces-s_t_setvf-s_t_stress-s_t_newpts,
+	       100*(s_t_total-s_t_forces-s_t_setvf-s_t_stress-s_t_newpts)/s_t_total);
+}
 #include <utility>
 
-#include <omp.h>
 #include <smmintrin.h>
 
 using namespace std;
@@ -46,8 +121,9 @@ void PatchGenerator::AddPointToLookup(const point &p)
 	q.y = ((int)p.y)/NEIGHBOUR_RADIUS;
 	q.z = ((int)p.z)/NEIGHBOUR_RADIUS;
 	
-	if (pointLookup.count(q)==0)
-	  pointLookup[q] = pointSet();
+	// This used to be three table lookups for the same bucket: count, then operator[] to create,
+	// then operator[] to write. operator[] already creates the empty element when it is missing,
+	// so one is enough.
 	pointLookup[q].push_back(p);
 }
 
@@ -68,6 +144,8 @@ float PatchGenerator::GetDistanceAtPoint(int xp, int yp, int zp)
 
 bool PatchGenerator::HasCloseNeighbour(const point &p)
 {
+	double tv0 = now(); mine().n_neighbour_calls++;
+	struct Closer { double t0; Closer(double t):t0(t){} ~Closer(){ mine().t_neighbours += now()-t0; } } _c(tv0);
 	int xp = ((int)p.x)/NEIGHBOUR_RADIUS;
 	int yp = ((int)p.y)/NEIGHBOUR_RADIUS;
 	int zp = ((int)p.z)/NEIGHBOUR_RADIUS;
@@ -77,8 +155,18 @@ bool PatchGenerator::HasCloseNeighbour(const point &p)
 	for(q.y = yp-1; q.y<=yp+1; q.y++)
 	for(q.z = zp-1; q.z<=zp+2; q.z++)
 	{
-		for(const point &r : pointLookup[q])
+		// This used to be pointLookup[q] on a READ-ONLY path: operator[] inserts an empty vector
+		// for every missing bucket, and this loop visits 36 of them per candidate point. The map
+		// filled up with empty buckets, with rehashing and a dirty cache, and the function sits
+		// inside MakeNewPoints, which the 2026-09-11 timers put at 51.3 % of growth time.
+		// find() inserts nothing and the result is the same: iterating a freshly created empty
+		// vector and skipping the bucket both mean "no neighbour". The map is never walked in
+		// full, so the difference is not observable anywhere else.
+		auto it = pointLookup.find(q);
+		if (it == pointLookup.end()) continue;
+		for(const point &r : it->second)
 		{
+			mine().n_comparisons++;
 			if ((p-r).length()<=NEIGHBOUR_RADIUS_FLOAT)
 			{
 				return true;
@@ -96,8 +184,8 @@ void PatchGenerator::SetVectorField(int x, int y)
   uint64_t pz = (uint64_t)paperSheet[x][y].pos.z;
   uint64_t p = (px<<32)+(py<<16)+pz;
   
-  auto it = vectorFieldLookup.find(p);  
-  if (it == vectorFieldLookup.end())
+  const Vec3 *found = vectorFieldLookup.find(p);
+  if (!found)
   {
 	Vec3 v; // defaults to 0,0,0
 
@@ -111,11 +199,11 @@ void PatchGenerator::SetVectorField(int x, int y)
 		v = v*VECTORFIELD_CONSTANT;
 	}
 
-	vectorFieldLookup[p] = paperSheet[x][y].vectorField = v;
+	vectorFieldLookup.insert(p,v); vfSheet[x][y] = v;
   }
   else
   {
-	paperSheet[x][y].vectorField = it->second;
+	vfSheet[x][y] = *found;
   }
   
   //printf("Vector field for %d,%d was %f,%f,%f,%f\n",x,y,paperVectorField[x][y][0],paperVectorField[x][y][1],paperVectorField[x][y][2],paperVectorField[x][y][3]);
@@ -143,25 +231,19 @@ void PatchGenerator::InitExpectedDistanceLookup(void)
         acc += direction*force; \
 	  }
 
-float PatchGenerator::ForcesAndMove(void)
-{  
-  float largestForce = 0.0;
-  
-// This makes it slower rather than faster  
-//#pragma omp parallel for reduction(max:largestForce)
-  for(int ai = 0; ai<activeListSize; ai++)
-  {
+// Forces on one point: reads .pos of the neighbours, writes .vel of its own point, updates the
+// running maximum. It touches nothing another point is writing in the same pass, which is a
+// Jacobi update, so it can run in parallel without changing the result.
+void PatchGenerator::ForcesOnPoint(int ai, float &maxForce)
+{
 	int x = activeList[ai][0], y = activeList[ai][1];
-	
-    Vec3 acc = paperSheet[x][y].vectorField; // This will get multiplie by springForceConstant later
-	                                          // So we have already divided by that in the constant definition for
-											  // VECTORFIELD_CONSTANT
+
+	Vec3 acc = vfSheet[x][y];
 	Vec3 posxy = paperSheet[x][y].pos;
 
-	//printf("Pos: %f %f %f\n",posxy.x,posxy.y,posxy.z);
-	
-	// Don't bother with range checks - make sure elsewhere that growth stops before we get to the edges
-    FORCES_INNERLOOP(-1,-1)
+	// The order of the eight neighbours is left untouched: floating-point addition is not
+	// associative.
+	FORCES_INNERLOOP(-1,-1)
 	FORCES_INNERLOOP(-1,0)
 	FORCES_INNERLOOP(-1,1)
 	FORCES_INNERLOOP(0,-1)
@@ -170,29 +252,74 @@ float PatchGenerator::ForcesAndMove(void)
 	FORCES_INNERLOOP(1,0)
 	FORCES_INNERLOOP(1,1)
 
-    acc *= SPRING_FORCE_CONSTANT;
+	acc *= SPRING_FORCE_CONSTANT;
 
-    float forceMag = acc.lengthSquared();
-		
-    largestForce = std::max(forceMag,largestForce);
-  
-    paperSheet[x][y].vel *= FRICTION_CONSTANT;
-	
-    paperSheet[x][y].vel += acc;
-  }
+	float forceMag = acc.lengthSquared();
+	maxForce = std::max(forceMag,maxForce);
 
-  for(int ai = 0; ai<activeListSize; ai++)
-  {
+	velSheet[x][y] *= FRICTION_CONSTANT;
+	velSheet[x][y] += acc;
+}
+
+// Moves one point and records whether it crossed a voxel boundary. SetVectorField is NOT called
+// here: it writes to the shared map vectorFieldLookup and stays in a serial pass.
+void PatchGenerator::MovePoint(int ai)
+{
 	int x = activeList[ai][0], y = activeList[ai][1];
 
-    point oldPos = paperSheet[x][y].pos;
-    paperSheet[x][y].pos += paperSheet[x][y].vel;
-		
-	if (int(oldPos.x) != int(paperSheet[x][y].pos.x) || int(oldPos.y) != int(paperSheet[x][y].pos.y) || int(oldPos.z) != int(paperSheet[x][y].pos.z))
-	  SetVectorField(x,y);
-  }
-  
+	point oldPos = paperSheet[x][y].pos;
+	paperSheet[x][y].pos += velSheet[x][y];
+
+	vfToRedo[ai] = (int(oldPos.x) != int(paperSheet[x][y].pos.x) || int(oldPos.y) != int(paperSheet[x][y].pos.y) || int(oldPos.z) != int(paperSheet[x][y].pos.z));
+}
+
+// One relaxation step: forces on every active point, then the move, then the field for the
+// points that changed voxel.
+float PatchGenerator::ForcesAndMove(void)
+{
+  float largestForce = 0.0;
+
+  double t0 = now();
+  for(int ai = 0; ai<activeListSize; ai++)
+	ForcesOnPoint(ai,largestForce);
+
+  for(int ai = 0; ai<activeListSize; ai++)
+	MovePoint(ai);
+  double t1 = now(); mine().t_forces += t1-t0;
+
+  for(int ai = 0; ai<activeListSize; ai++)
+	if (vfToRedo[ai])
+	  SetVectorField(activeList[ai][0],activeList[ai][1]);
+  mine().t_setvf += now()-t1;
+
   return sqrt(largestForce);
+}
+
+// The relaxation loop with the parallel region LIFTED out of it.
+//
+// Why it was tried and why it went. The first attempt (2026-09-11) put the directives inside
+// ForcesAndMove, which is called up to 12500 times per patch: about 25000 parallel regions were
+// opened, and the result was slower in every configuration tried (4 threads 31 s against 23,
+// 8 threads 55 s, 16 threads 454 s). Lifting the region out helped but was still not enough.
+//
+// Why it stays identical bit for bit. The first loop is a Jacobi update: it reads .pos
+// of the neighbours and writes only .vel of its own point. The reduction is over a maximum,
+// which is exact and does not depend on the order. The second loop updates .pos, which no other
+// point reads in that pass. SetVectorField writes to the shared map and stays serial, in the
+// original order.
+// The relaxation loop. A parallel variant used to live here, opening one OpenMP region per
+// growth step rather than per iteration. It was removed on 2026-09-13 after measurement: its
+// output was identical bit for bit, and it was 7.1 times slower at eight threads, because
+// raising the thread count multiplies how many regions are opened and not how much work happens
+// inside each one.
+int PatchGenerator::RelaxToConvergence(float &finalForce)
+{
+	int j = 0;
+	float f = 0.0f;
+	while (((f=ForcesAndMove())>RELAX_FORCE_THRESHHOLD && j<MAX_RELAX_ITERATIONS) || j<MIN_RELAX_ITERATIONS)
+		j++;
+	finalForce = f;
+	return j;
 }
 
 bool PatchGenerator::TryToFill(int xp, int yp, Vec3 &rp)
@@ -252,12 +379,28 @@ bool PatchGenerator::TryToFill(int xp, int yp, Vec3 &rp)
   return false;
 }
 
+// Returns the page holding block (zb,yb,xb), allocating it when needed and when 'creating'.
+// Out of bounds it returns NULL: in the full array an index out of range read somebody else's
+// memory, which is undefined behaviour and not a property worth preserving.
+unsigned char *PatchGenerator::StressPage(int zb, int yb, int xb, bool creating)
+{
+	if (zb < 0 || yb < 0 || xb < 0 || zb >= STRESS_NZ || yb >= STRESS_NY || xb >= STRESS_NX)
+		return NULL;
+	unsigned char *&pg = stressPage[zb/STRESS_PAGE][yb/STRESS_PAGE][xb/STRESS_PAGE];
+	if (!pg && creating)
+		pg = (unsigned char *)calloc((size_t)STRESS_PAGE*STRESS_PAGE*STRESS_PAGE, 1);
+	return pg;
+}
+
 void PatchGenerator::ClearHighStress(void)
 {
-	for(int x = 0; x<VOL_SIZE_X/STRESS_BLOCK_SIZE; x++)
-	for(int y = 0; y<VOL_SIZE_Y/STRESS_BLOCK_SIZE; y++)
-	for(int z = 0; z<VOL_SIZE_Z/STRESS_BLOCK_SIZE; z++)
-		highStress[z][y][x] = 0;
+	// Freeing the pages is both the clear and the release. The original walked 206 MiB with the
+	// loops inverted with respect to the layout (x outermost, z innermost on a [z][y][x] array):
+	// one cache line and one TLB entry for every single byte.
+	for(int a = 0; a<STRESS_PZ; a++)
+	for(int b = 0; b<STRESS_PY; b++)
+	for(int c = 0; c<STRESS_PX; c++)
+		if (stressPage[a][b][c]) { free(stressPage[a][b][c]); stressPage[a][b][c] = NULL; }
 }
 
 bool PatchGenerator::MarkHighStress(void)
@@ -295,8 +438,12 @@ bool PatchGenerator::MarkHighStress(void)
 		for(int yo = yb-(yb>0); yo <= yb+(yb+1<VOL_SIZE_Y/STRESS_BLOCK_SIZE); yo++)
 		for(int zo = zb-(zb>0); zo <= zb+(zb+1<VOL_SIZE_Z/STRESS_BLOCK_SIZE); zo++)
  		{
-			highStress[zo][yo][xo] = true;
-			r = true;
+			unsigned char *pg = StressPage(zo,yo,xo,true);
+			if (pg)
+			{
+				pg[((zo%STRESS_PAGE)*STRESS_PAGE + (yo%STRESS_PAGE))*STRESS_PAGE + (xo%STRESS_PAGE)] = 1;
+				r = true;
+			}
 		}
 		
 		if (!silent) printf("\nHigh stress at x,y,z=%f,%f,%f",paperSheet[x][y].pos.x,paperSheet[x][y].pos.y,paperSheet[x][y].pos.z);
@@ -308,7 +455,12 @@ bool PatchGenerator::MarkHighStress(void)
 
 bool PatchGenerator::HasHighStress(int x, int y, int z)
 {
-	return highStress[(z-VOL_OFFSET_Z)/STRESS_BLOCK_SIZE][(y-VOL_OFFSET_Y)/STRESS_BLOCK_SIZE][(x-VOL_OFFSET_X)/STRESS_BLOCK_SIZE];
+	int zb = (z-VOL_OFFSET_Z)/STRESS_BLOCK_SIZE;
+	int yb = (y-VOL_OFFSET_Y)/STRESS_BLOCK_SIZE;
+	int xb = (x-VOL_OFFSET_X)/STRESS_BLOCK_SIZE;
+	unsigned char *pg = StressPage(zb,yb,xb,false);
+	if (!pg) return false;
+	return pg[((zb%STRESS_PAGE)*STRESS_PAGE + (yb%STRESS_PAGE))*STRESS_PAGE + (xb%STRESS_PAGE)] != 0;
 }
 
 // TODO newPtsPaper needs to be vector of int vec2
@@ -385,6 +537,8 @@ int PatchGenerator::MakeNewPoints(pointSet &newPts, pointSet &newPtsPaper)
 
 void PatchGenerator::AddNewPoints(pointSet &newPts, pointSet &newPtsPaper)
 {
+    // Two passes instead of one. Positions and activations are settled first, and the field is
+    // computed afterwards, when every new point is already in place.
     for(int i = 0; i<(int)newPts.size(); i++)
     {
 	  point paperPoint = newPtsPaper[i];
@@ -392,13 +546,17 @@ void PatchGenerator::AddNewPoints(pointSet &newPts, pointSet &newPtsPaper)
 	  int y = paperPoint.y;
 	  paperSheet[x][y].pos = newPts[i];
 
-	  paperSheet[x][y].vel.x = 0.0;
-	  paperSheet[x][y].vel.y = 0.0;
-	  paperSheet[x][y].vel.z = 0.0;
-	  
+	  velSheet[x][y].x = 0.0;
+	  velSheet[x][y].y = 0.0;
+	  velSheet[x][y].z = 0.0;
+
       MakeActive(x,y);
-	  SetVectorField(x,y);
     }
+
+    // The field of the new points is computed here, in a pass of its own: by now they are all
+    // active and their positions are settled.
+    for(int i = 0; i<(int)newPts.size(); i++)
+      SetVectorField((int)newPtsPaper[i].x,(int)newPtsPaper[i].y);
 }
 
 PatchGenerator::PatchGenerator(const string &surfaceZarrName_) : surfaceZarrName(surfaceZarrName_), vfc(NULL)
@@ -408,10 +566,18 @@ PatchGenerator::PatchGenerator(const string &surfaceZarrName_) : surfaceZarrName
     InitExpectedDistanceLookup();
 	
     activeListSize = 0;	
+    surfaceZarr = NULL;   // opened lazily on the first patch, then kept open
+    std::memset(stressPage, 0, sizeof(stressPage));
 }
+
 		
 PatchGenerator::~PatchGenerator(void)
 {
+	// The zarr reader and the vector field calculator stay alive from one patch to the next:
+	// they are released here.
+	if (vfc) { delete vfc; vfc = NULL; }
+	if (surfaceZarr) { ZARRClose_1(surfaceZarr); surfaceZarr = NULL; }
+	ClearHighStress();
 }
 
 bool PatchGenerator::SetSeed(const std::vector<float> &seed)
@@ -519,7 +685,8 @@ void PatchGenerator::OutputPatch(Patch &patch, int iter)
 }
 
 int PatchGenerator::GeneratePatch(const std::vector<float> &seed,Patch &patch, Patch &boundary, int iter, bool _silent)
-{ 
+{
+  double t_patch = now(); 
   silent = _silent;
   if (!silent) printf("Called GeneratePatch\n");
   int totPointsAdded = 0;
@@ -536,17 +703,30 @@ int PatchGenerator::GeneratePatch(const std::vector<float> &seed,Patch &patch, P
   pointSet newPtsPaper;
   pointSet newPts;
 
-  // TODO - in future it would be better to keep the zarrs open, but have more efficient buffer lookup
-  if (!silent) printf("Opening zarrs\n");
-  surfaceZarr = ZARROpen_1(surfaceZarrName.c_str());
- 
+  // The author's TODO that used to sit here ("in future it would be better to keep the zarrs open")
+  // is applied: the reader is opened once and lives as long as the generator, instead of being
+  // allocated and destroyed for every patch. ZARR_1 holds 80 decompressed 192^3 buffers, that is
+  // 540 MiB: opening and closing it fifteen hundred times per run meant throwing that cache away
+  // and rebuilding it every time, with four threads doing it at once.
+  // This is safe because during growth the zarr is read-only: there is no ZARRWrite_1 anywhere on
+  // this path, so no eviction ever writes to disk and a chunk read again gives the same bytes.
+  // It is closed in the destructor.
+  if (!surfaceZarr)
+  {
+    if (!silent) printf("Opening zarrs\n");
+    surfaceZarr = ZARROpen_1(surfaceZarrName.c_str());
+  }
+
+  // TRIED on 2026-09-11, keeping it alive across patches like the zarr reader: it does NOT pay,
+  // and it costs 577 MB. The reason is MIN_SEED_DISTANCE, which forces 600 voxels between seeds,
+  // so two patches never overlap and there is nothing to reuse. Within one patch, instead, the
+  // cache most certainly does pay, and so it stays.
   vfc = new VectorFieldCalculator(surfaceZarr);
   
   if (!SetSeed(seed))
   {
 	  printf("Seed point is not a surface point\n");
-	  delete vfc;
-      ZARRClose_1(surfaceZarr);
+	  delete vfc; vfc = NULL;
 	  return 0;
   }
   
@@ -557,15 +737,13 @@ int PatchGenerator::GeneratePatch(const std::vector<float> &seed,Patch &patch, P
   {
     if (!silent) printf("#");
 	fflush(stdout);
-    int j = 0;
-    while (((f=ForcesAndMove())>RELAX_FORCE_THRESHHOLD && j<MAX_RELAX_ITERATIONS) || j<MIN_RELAX_ITERATIONS)
-	{
-	  //printf("Largest force:%f\n",f);
-      j++;
-	}
+    int j = RelaxToConvergence(f);
 	totIters += j;
 	
-	if (MarkHighStress())
+	double ts0 = now();
+	bool stress_found = MarkHighStress();
+	mine().t_stress += now()-ts0;
+	if (stress_found)
 	{
 	  if (!silent) printf("\nHigh stress encountered\n");
 	  break;
@@ -573,8 +751,12 @@ int PatchGenerator::GeneratePatch(const std::vector<float> &seed,Patch &patch, P
 	
     newPts.clear();
     newPtsPaper.clear();
+	double tn0 = now();
 	totPointsAdded += MakeNewPoints(newPts,newPtsPaper);
+	double tn1 = now(); mine().t_makepts += tn1-tn0;
 	AddNewPoints(newPts,newPtsPaper);
+	mine().t_addpts += now()-tn1;
+	mine().t_newpts += now()-tn0;
 	
     if (totPointsAdded <10 && i==10)
 	{
@@ -595,9 +777,9 @@ int PatchGenerator::GeneratePatch(const std::vector<float> &seed,Patch &patch, P
   if (newPts.size()>0)
 	OutputBoundary(boundary,newPts,newPtsPaper);
 
-  delete vfc;
-  ZARRClose_1(surfaceZarr);
-  
+  delete vfc; vfc = NULL;
+  mine().t_total += now()-t_patch;
+
   return i;
 }
 

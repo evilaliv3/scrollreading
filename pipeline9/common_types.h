@@ -4,6 +4,7 @@
 // later stop here without it.
 #include <cstdint>
 
+#include <string>
 #include <vector>
 #include <map>
 
@@ -34,10 +35,23 @@ struct pointIntHash {
 };
 
 
+// The output folder used to be a compile-time constant, so pointing the chain at a different run
+// meant recompiling all of it. Worse, three objects (anneal.o, visitorder.o, omissiontest.o) do
+// not depend on parameters.h, so after a change they kept the PREVIOUS folder compiled in and
+// wrote there in silence, with no error anywhere.
+// It is now read once from SIMPAPER_OUTPUT_DIR, falling back to the compiled value, so one binary
+// serves any number of runs and the identity of the old behaviour is preserved when unset.
+const char *outputDir();
+std::string outPath(const char *suffix);
+
 typedef vector<point> pointSet;
 
+// Holds the position ONLY. Velocity and vector field live in separate arrays inside
+// PatchGenerator: the hot loop reads the eight neighbours and needs nothing but .pos from them,
+// so keeping them together pulled in 36 bytes of cache line for 12 useful bytes.
+// Measured 2026-09-11: that loop is bound by memory bandwidth, not by the CPU.
 typedef struct {
-	point pos,vel,vectorField;
+	point pos;
 } paperPoint;
 
 struct patchPoint {
