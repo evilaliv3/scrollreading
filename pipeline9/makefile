@@ -19,13 +19,32 @@ endif
 # RPATH=1 records both lib folders in the binaries, so that they run without LD_LIBRARY_PATH
 # when those folders are not on the loader's default path. Off by default: a binary built
 # against the system libraries should carry no path.
+# Two optional build variables, both off by default, neither of which changes a computed value:
+#   LTO=1           link time optimisation (-flto=auto).
+#   PGO=generate    an instrumented build: running it writes a profile (*.gcda) next to the objects.
+#   PGO=use         a build that reads that profile. The profile comes from one training run of the
+#                   PGO=generate binary on real data; delete the objects and binaries between the two
+#                   builds, and keep the .gcda files.
+# -fprofile-update=atomic because the growth is threaded; -fprofile-partial-training keeps the
+# code the training run never reached optimised as usual. Combined with NATIVE=1 (or
+# ARCHFLAGS=-march=native) the binary runs only on CPUs with the builder's instruction sets.
+LTO ?= 0
+ifeq ($(LTO),1)
+  OPTFLAGS += -flto=auto
+endif
+ifeq ($(PGO),generate)
+  OPTFLAGS += -fprofile-generate -fprofile-update=atomic
+endif
+ifeq ($(PGO),use)
+  OPTFLAGS += -fprofile-use -fprofile-partial-training -Wno-error=coverage-mismatch
+endif
 BLOSC2_PREFIX ?= /usr/local
 LIBTIFF_PREFIX ?= /usr/local
 RPATH ?= 0
 ifeq ($(RPATH),1)
   RPATHFLAGS = -Wl,-rpath,$(BLOSC2_PREFIX)/lib -Wl,-rpath,$(LIBTIFF_PREFIX)/lib
 endif
-CFLAGS=-O3 -w -fopenmp -ffp-contract=off $(ARCHFLAGS) -I$(BLOSC2_PREFIX)/include -I$(LIBTIFF_PREFIX)/include
+CFLAGS=-O3 -w -fopenmp -ffp-contract=off $(ARCHFLAGS) $(OPTFLAGS) -I$(BLOSC2_PREFIX)/include -I$(LIBTIFF_PREFIX)/include
 LFLAGS=-lblosc2 -ltiff -L$(BLOSC2_PREFIX)/lib -L$(LIBTIFF_PREFIX)/lib $(RPATHFLAGS)
 
 # parameters.h is generated from parameters.json and is included by most units, but three of
