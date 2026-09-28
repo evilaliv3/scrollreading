@@ -1,5 +1,9 @@
 #pragma once
 
+// uint32_t below. libstdc++ stopped pulling <cstdint> in transitively, so GCC 13 and
+// later stop here without it.
+#include <cstdint>
+
 #include <vector>
 #include <map>
 
