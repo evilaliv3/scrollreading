@@ -941,8 +941,25 @@ int PatchGenerator::GeneratePatch(const std::vector<float> &seed,Patch &patch, P
   ClearPointLookup();
   distanceLookup.clear();
 
-  if (iter%1000==0)
-      vectorFieldLookup.clear();
+  // The cache of smoothed field values, keyed by voxel, was cleared once every thousand patches.
+  // Over a run it therefore grows to hold every voxel every patch of this slot has visited, and it
+  // is consulted about two hundred million times, at addresses with no locality. Seeds are kept
+  // 600 voxels apart, so what a previous patch left in it is almost never asked for again: the
+  // entries are dead weight that pushes the live ones out of cache.
+  // Clearing it for every patch cannot change a value, because what it holds is a function of the
+  // voxel and the field and is recomputed identically when it is not there.
+  // SIMPAPER_FIELD_CACHE_EVERY sets the period; 1 is per patch, 0 restores the old 1000.
+  {
+    static int period = -1;
+    if (period < 0)
+    {
+      const char *e = getenv("SIMPAPER_FIELD_CACHE_EVERY");
+      period = e ? atoi(e) : 1;
+      if (period <= 0) period = 1000;
+    }
+    if (iter%period==0)
+        vectorFieldLookup.clear();
+  }
   
   pointSet newPtsPaper;
   pointSet newPts;
