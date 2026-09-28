@@ -292,7 +292,14 @@ bool GeneratePatches(std::map<int,Patch> *patches,AlignmentMap *am, int numPatch
 
 	for(int i = 0; i<patches_in_flight; i++)
 	{
-		pg[i] = new PatchGenerator(string(SURFACE_ZARR));
+		// The field is a read-only input and the chain never writes it, so which copy of it is
+		// read is a run-time choice, not a compile-time one. SIMPAPER_SURFACE_ZARR points growth
+		// at another copy of the same voxels: a re-encoded one, for instance. The gate is what
+		// says whether two copies really do hold the same voxels.
+		{
+			const char *sz = getenv("SIMPAPER_SURFACE_ZARR");
+			pg[i] = new PatchGenerator(string((sz && *sz) ? sz : SURFACE_ZARR));
+		}
 	}
 	
 	std::vector<std::vector<float> > seeds;
