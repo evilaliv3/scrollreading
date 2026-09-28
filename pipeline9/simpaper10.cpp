@@ -309,16 +309,16 @@ bool GeneratePatches(std::map<int,Patch> *patches,AlignmentMap *am, int numPatch
 	
 	std::vector<std::vector<float> > seeds;
 			
-	float seedInit[] = {
-	  SEED_X,
-	  SEED_Y,
-	  SEED_Z,
-	  SEED_AXIS1_X,
-	  SEED_AXIS1_Y,
-	  SEED_AXIS1_Z,
-	  SEED_AXIS2_X,
-	  SEED_AXIS2_Y,
-	  SEED_AXIS2_Z};
+	extern float sa_seed_runtime[9]; float seedInit[] = {
+	  sa_seed_runtime[0],
+	  sa_seed_runtime[1],
+	  sa_seed_runtime[2],
+	  sa_seed_runtime[3],
+	  sa_seed_runtime[4],
+	  sa_seed_runtime[5],
+	  sa_seed_runtime[6],
+	  sa_seed_runtime[7],
+	  sa_seed_runtime[8]};
 
 	seeds.push_back(std::vector<float>(std::begin(seedInit),std::end(seedInit)));
 	  
@@ -1692,7 +1692,7 @@ int main(int argc, char *argv[])
 
 		
 		// Enough buffers that we can do several layers before reloading buffers,
-		ZARR_1_b700 *surfaceZarr = ZARROpen_1_b700(SURFACE_ZARR);
+		extern const char *sa_surface_zarr; ZARR_1_b700 *surfaceZarr = ZARROpen_1_b700(sa_surface_zarr);
 
 		printf("Rendering...\n");
 
@@ -1718,7 +1718,7 @@ int main(int argc, char *argv[])
 		LoadPatchesAndRelationships(patches,am,patchLimit(),&patchesToShowSet);
 		printf("Finished loading\n");
 		// Enough buffers that we can do several layers before reloading buffers,
-		ZARR_1_b700 *surfaceZarr = ZARROpen_1_b700(SURFACE_ZARR);
+		extern const char *sa_surface_zarr; ZARR_1_b700 *surfaceZarr = ZARROpen_1_b700(sa_surface_zarr);
 
 		printf("Rendering...\n");
 
@@ -1730,7 +1730,7 @@ int main(int argc, char *argv[])
 
 	if (mode=="s")
 	{		
-		int zcoord = SEED_Z;
+		extern float sa_seed_runtime[9]; int zcoord = (int)sa_seed_runtime[2];
 		
 		if (argc>2)
 			zcoord = atoi(argv[2]);
@@ -1749,7 +1749,7 @@ int main(int argc, char *argv[])
 		std::set<Patch *> shown;
 		
 		// Enough buffers that we can do several layers before reloading buffers,
-		ZARR_1_b700 *surfaceZarr = ZARROpen_1_b700(SURFACE_ZARR);
+		extern const char *sa_surface_zarr; ZARR_1_b700 *surfaceZarr = ZARROpen_1_b700(sa_surface_zarr);
 
 		printf("Rendering...\n");
 		

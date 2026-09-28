@@ -54,7 +54,7 @@ LFLAGS=-lblosc2 -ltiff -L$(BLOSC2_PREFIX)/lib -L$(LIBTIFF_PREFIX)/lib $(RPATHFLA
 # rest of the pipeline uses the new one, with no error anywhere.
 $(patsubst %.cpp,%.o,$(wildcard *.cpp)) $(patsubst %.c,%.o,$(wildcard *.c)): parameters.h
 
-simpaper10: common_types.o patch_generator.o simpaper10.o zarr_1.o zarr_1_b700.o bigpatch.o align_patches.o erasepoints.o badpatchfinder.o zarr_show2_u8.o sliceanimrender.o position_patches.o calcvectorfield.o patchcolourkey.o PatchSpringSimulation.o anneal.o visitorder.o scoreplacement.o omissiontest.o
+simpaper10: seed_runtime.o common_types.o patch_generator.o simpaper10.o zarr_1.o zarr_1_b700.o bigpatch.o align_patches.o erasepoints.o badpatchfinder.o zarr_show2_u8.o sliceanimrender.o position_patches.o calcvectorfield.o patchcolourkey.o PatchSpringSimulation.o anneal.o visitorder.o scoreplacement.o omissiontest.o
 	$(CC) -o $@ $^ $(CFLAGS) $(LFLAGS)
 
 PatchSpringSimulation.o: PatchSpringSimulation.cpp PatchSpringSimulation.hpp
@@ -148,3 +148,7 @@ kernel_test: kernel_test.cpp patch_generator.o calcvectorfield.o common_types.o 
 # a copy of the surface prediction in LZ4HC, checked chunk by chunk (see the head of recode_zarr_lz4hc.c)
 recode_zarr_lz4hc: recode_zarr_lz4hc.c
 	$(CC) -o $@ $< $(CFLAGS) $(LFLAGS)
+
+# the seed point and the surface zarr read at start, so one binary serves every seed (seed_runtime.cpp)
+seed_runtime.o: seed_runtime.cpp parameters.h
+	$(CC) -c $< $(CFLAGS)
