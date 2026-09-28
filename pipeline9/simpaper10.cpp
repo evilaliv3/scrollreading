@@ -27,6 +27,10 @@
 #include "zarr_show2_u8.h"
 extern long zarrMissingChunks_1;
 extern long zarrMissingChunks_1_b700;
+extern long zarrEmptyChunks_1;
+extern long zarrEmptyChunks_1_b700;
+extern long zarrManifestEntries;
+extern long zarrManifestLookups;
 #include "PatchSpringSimulation.hpp"
 #include "anneal.h"
 void PrintTimers(void);
@@ -1003,10 +1007,20 @@ int main(int argc, char *argv[])
 		// A chunk that is not on disk is read as the zarr fill value and the growth stops there
 		// without a word. Say it, but do not say whose fault it is: in zarr an absent chunk means
 		// fill_value by definition, so this is an error only when the chunk does exist in the
-		// source the local box was copied from. Set ZARR_MISSING_LIST and the readers write the
-		// paths there, one per line, for the caller to check upstream.
+		// source the local box was copied from. Which of the two it is comes from the manifest
+		// named by ZARR_CHUNK_MANIFEST; with no manifest every absent chunk counts as an error,
+		// which is the reading this check has always had. Set ZARR_MISSING_LIST and the readers
+		// write the paths there, one per line, for the caller to check upstream.
+		// This runs after GeneratePatches has written everything, so the exit value never costs
+		// the caller work already on disk.
 		long missing = zarrMissingChunks_1 + zarrMissingChunks_1_b700;
+		long empty = zarrEmptyChunks_1 + zarrEmptyChunks_1_b700;
 		printf("Zarr chunks absent from disk during growth: %ld (zarr_1 %ld, zarr_1_b700 %ld)\n",missing,zarrMissingChunks_1,zarrMissingChunks_1_b700);
+		printf("Zarr chunks absent and empty in the source: %ld (zarr_1 %ld, zarr_1_b700 %ld)\n",empty,zarrEmptyChunks_1,zarrEmptyChunks_1_b700);
+		if (zarrManifestEntries>0)
+			printf("Chunk manifest: %ld chunks listed, consulted %ld times\n",zarrManifestEntries,zarrManifestLookups);
+		else
+			printf("Chunk manifest: none given, so every absent chunk counts as missing\n");
 		if (missing>0)
 		{
 			const char *listFile = getenv("ZARR_MISSING_LIST");
@@ -1017,6 +1031,9 @@ int main(int argc, char *argv[])
 			printf("         the data and nothing is wrong.\n");
 			if (listFile) printf("         The paths are listed in %s\n",listFile);
 			else       printf("         Set ZARR_MISSING_LIST=<file> to get the list of paths.\n");
+			if (zarrManifestEntries==0)
+				printf("         Set ZARR_CHUNK_MANIFEST=<file> if the source is a whole scroll, where\n"
+				       "         most of the grid is empty and absent is not the same as missing.\n");
 			delete patches;
 			delete am;
 			exit(3);

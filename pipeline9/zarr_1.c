@@ -24,7 +24,140 @@
 #endif
 
 #include <omp.h>
-long zarrMissingChunks_1 = 0; // chunks read as zeros because the file was missing
+long zarrMissingChunks_1 = 0; // chunks absent from disk that the source is known to hold
+long zarrEmptyChunks_1 = 0;   // chunks absent from disk that the source never wrote
+
+/* -------------------------------------------------------------------------------------------
+   The manifest of the published array.
+
+   A chunk that is not on disk is read as the zarr fill value, which is zero. Whether that zero
+   is the data or a hole is not something the reader can see: it depends on what the source the
+   local copy was made from actually holds. On a scroll published whole about two thirds of the
+   grid is never written, because the field is empty there, so treating every absent chunk as an
+   error makes the run die on every scroll. On a box copied out of that source, an absent chunk
+   that the source does hold is a hole, and a run that reads zeros there is not to be trusted.
+
+   ZARR_CHUNK_MANIFEST names a file that lists the chunks the source holds, one per line, the
+   relative path first and the rest of the line ignored:
+
+       47/15/16 344333 3dce538ade733f080a252b2e431d6ee3
+
+   which is the file the fetcher writes, used as it stands. With a manifest, an absent chunk that
+   is on the list is an error and an absent chunk that is not on it is the empty part of the
+   scroll. Without a manifest nothing changes: every absent chunk is an error, exactly as before.
+   The variable can only ever describe the emptiness more precisely, never relax the check by
+   accident, because leaving it unset keeps the strictest reading.
+
+   The list is read once, into an open-addressed set of packed (z,y,x) keys, so a lookup is one
+   mix and a short probe. It is never consulted on the hot path: the only caller is the branch
+   that has just failed to open a file, and the run prints how many times it was consulted.
+   ------------------------------------------------------------------------------------------- */
+
+static uint64_t *zarrManifestSlot = NULL;  /* slot holds key+1; 0 is the empty slot */
+static size_t zarrManifestMask = 0;
+static int zarrManifestLoaded = 0;         /* the load was attempted */
+static int zarrManifestGiven = 0;          /* a manifest was named and read */
+long zarrManifestEntries = 0;              /* chunks listed */
+long zarrManifestLookups = 0;              /* how many times the set was consulted */
+
+static uint64_t zarrManifestKeyOf(int z, int y, int x)
+{
+	/* Chunk indices of these arrays reach a few hundred, so twenty one bits each is room to
+	   spare and the packing is one to one. */
+	return ((uint64_t)(uint32_t)z<<42) | ((uint64_t)(uint32_t)y<<21) | (uint64_t)(uint32_t)x;
+}
+
+static uint64_t zarrManifestMix(uint64_t k)
+{
+	k ^= k>>33; k *= 0xff51afd7ed558ccdULL;
+	k ^= k>>33; k *= 0xc4ceb9fe1a85ec53ULL;
+	k ^= k>>33;
+	return k;
+}
+
+static void zarrManifestInsert(uint64_t key)
+{
+	size_t i = (size_t)(zarrManifestMix(key) & zarrManifestMask);
+	while (zarrManifestSlot[i])
+	{
+		if (zarrManifestSlot[i]==key+1) return;
+		i = (i+1) & zarrManifestMask;
+	}
+	zarrManifestSlot[i] = key+1;
+	zarrManifestEntries++;
+}
+
+/* Read the manifest, once. Called from every ZARROpen, inside a critical region, so that the
+   table is complete and published before any reader can reach the branch that consults it. */
+void zarrManifestEnsure(void)
+{
+	if (zarrManifestLoaded) return;
+	#pragma omp critical (zarrManifestLoad)
+	{
+		if (!zarrManifestLoaded)
+		{
+			const char *path = getenv("ZARR_CHUNK_MANIFEST");
+			zarrManifestLoaded = 1;
+			if (path && *path)
+			{
+				FILE *f = fopen(path,"rb");
+				if (!f)
+				{
+					printf("ZARR_CHUNK_MANIFEST=%s cannot be opened. Refusing to run: without the\n",path);
+					printf("list there is no way to tell an empty chunk from a missing one, and\n");
+					printf("guessing is what this variable exists to stop.\n");
+					exit(3);
+				}
+				/* Count the lines first, so the table is sized once and never grows. */
+				size_t lines = 0; int c, last = '\n';
+				while ((c=getc(f))!=EOF) { if (c=='\n') lines++; last = c; }
+				if (last!='\n') lines++;
+				size_t cap = 16;
+				while (cap < lines*2) cap <<= 1;
+				zarrManifestSlot = (uint64_t *)calloc(cap,sizeof(uint64_t));
+				if (!zarrManifestSlot)
+				{
+					printf("ZARR_CHUNK_MANIFEST: no memory for %zu slots\n",cap);
+					exit(3);
+				}
+				zarrManifestMask = cap-1;
+				rewind(f);
+				{
+					char line[4096];
+					while (fgets(line,sizeof(line),f))
+					{
+						int zz,yy,xx;
+						if (sscanf(line,"%d/%d/%d",&zz,&yy,&xx)==3)
+							zarrManifestInsert(zarrManifestKeyOf(zz,yy,xx));
+					}
+				}
+				fclose(f);
+				zarrManifestGiven = 1;
+				printf("Chunk manifest %s: %ld chunks listed, table of %zu slots\n",
+				       path,zarrManifestEntries,cap);
+			}
+		}
+	}
+}
+
+/* 1 when the source holds this chunk, so a file that is not there is a hole; 0 when the manifest
+   says the chunk was never written, so the fill value is the data. With no manifest every chunk
+   counts as held, which is what the chain did before the manifest existed. */
+int zarrChunkIsInManifest(int z, int y, int x)
+{
+	zarrManifestLookups++;
+	if (!zarrManifestGiven) return 1;
+	{
+		uint64_t key = zarrManifestKeyOf(z,y,x);
+		size_t i = (size_t)(zarrManifestMix(key) & zarrManifestMask);
+		while (zarrManifestSlot[i])
+		{
+			if (zarrManifestSlot[i]==key+1) return 1;
+			i = (i+1) & zarrManifestMask;
+		}
+	}
+	return 0;
+}
 
 
 typedef uint8_t ZARRType_1;
@@ -255,6 +388,8 @@ ZARR_1 *ZARROpen_1(const char *location)
 {
 	ZARR_1 *z = (ZARR_1 *)malloc(sizeof(ZARR_1));
 	
+	zarrManifestEnsure();
+
 	z->locationRootLength = strlen(location);
 	z->rootKey = zarrRootKeyOf(location);
 	
@@ -406,15 +541,20 @@ int ZARRCheckChunk_1(ZARR_1 *z, int c[3])
     //printf("Opening:%s\n",z->location);	
 	if (!f)
 	{
+		// In zarr an absent chunk means fill_value by definition, so a missing file is an error
+		// only when the chunk does exist in the source the box was copied from. The manifest is
+		// what says which of the two this is; with no manifest every absent chunk is an error.
+		if (zarrChunkIsInManifest(z->bufferIndex[z->index][0],z->bufferIndex[z->index][1],z->bufferIndex[z->index][2]))
+		{
 		printf("Did not find file:%s\n",z->location); // Useful to display this message because it often indicates a file naming problem
 		zarrMissingChunks_1++;
-		// The path goes to a list the caller can check upstream: in zarr an absent chunk means
-		// fill_value by definition, so a missing file is only an error when the chunk does exist
-		// in the source the box was copied from.
+		// The path goes to a list the caller can check upstream.
 		{
 			FILE *ml = fopen(getenv("ZARR_MISSING_LIST") ? getenv("ZARR_MISSING_LIST") : "/dev/null","a");
 			if (ml) { fprintf(ml,"%s\n",z->location); fclose(ml); }
 		}
+		}
+		else zarrEmptyChunks_1++;
 
 		memset(z->buffer,0,sizeof(ZARRType_1)*ZARR_CHUNK_BYTES);
 
