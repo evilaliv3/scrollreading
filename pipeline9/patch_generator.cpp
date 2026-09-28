@@ -40,7 +40,7 @@ static inline double now(void)
 	struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
 	return t.tv_sec + t.tv_nsec*1e-9;
 }
-extern "C" long zarrStoreHits_1, zarrStoreMisses_1, zarrStoreHeld_1;
+extern "C" long zarrStoreHits_1, zarrStoreInPlace_1, zarrStoreMisses_1, zarrStoreHeld_1, zarrStoreInPlace_1;
 
 void PrintTimers(void)
 {
@@ -76,8 +76,8 @@ void PrintTimers(void)
 	       n_hit, n_miss, 100.0*n_hit/(n_hit+n_miss+1));
 	{
 		if (zarrStoreHits_1 + zarrStoreMisses_1)
-			printf("  shared chunk store: %ld served, %ld decompressed, %ld held (%.1f GB)\n",
-			       zarrStoreHits_1, zarrStoreMisses_1, zarrStoreHeld_1,
+			printf("  shared chunk store: %ld served (%ld read in place), %ld decompressed, %ld held (%.1f GB)\n",
+			       zarrStoreHits_1, zarrStoreInPlace_1, zarrStoreMisses_1, zarrStoreHeld_1,
 			       zarrStoreHeld_1*7.077888/1024.0);
 	}
 	printf("  rest                             %7.1f s  %5.1f %%\n",

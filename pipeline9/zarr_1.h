@@ -40,6 +40,11 @@ typedef struct {
 
     /* Identifies which zarr this is, for the shared store of decompressed chunks. */
     unsigned long rootKey;
+
+    /* When the shared store serves a chunk, the reader can read it where it lies instead of
+       taking a 7 MB copy of it. slotPtr[i] is the store's array when slot i is borrowed and NULL
+       when the slot uses its own buffer. A write to a borrowed slot copies first. */
+    ZARRType_1 *slotPtr[ZARR_NBUF_MAX];
 } ZARR_1;
 
 ZARR_1 *ZARROpen_1(const char *location);
