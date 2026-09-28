@@ -275,19 +275,20 @@ bool GeneratePatches(std::map<int,Patch> *patches,AlignmentMap *am, int numPatch
 		// 1451 MB; with 80, 21 s and 2309 MB. The working set of one patch is about sixteen
 		// chunks, and keeping more buys no time, only memory. So the default is the measured
 		// working set plus a margin, and it is lowered only when the machine is small.
-		int nbuf = 24;
+		int nbuf = 24*(192/ZARR_CS)*(192/ZARR_CS)*(192/ZARR_CS);
 		if (available_kb > 0)
 		{
 			double per_reader_mb = (available_kb/1024.0) * 0.25 / patches_in_flight;
-			int possible = (int)(per_reader_mb / 6.75);
+			int possible = (int)(per_reader_mb / (ZARR_CHUNK_BYTES/1048576.0));
 			if (possible < nbuf) nbuf = possible;
-			if (nbuf < 12) nbuf = 12;   // below twelve the cache thrashes: measured
-			if (nbuf > 80) nbuf = 80;
+			if (nbuf < 12*(192/ZARR_CS)*(192/ZARR_CS)*(192/ZARR_CS))
+				nbuf = 12*(192/ZARR_CS)*(192/ZARR_CS)*(192/ZARR_CS);   // below twelve the cache thrashes: measured
+			if (nbuf > ZARR_NBUF_MAX) nbuf = ZARR_NBUF_MAX;
 		}
 		char buf[32]; snprintf(buf,sizeof(buf),"%d",nbuf);
 		setenv("ZARR_BUFFERS",buf,0);
 		printf("Memory: %ld MB available -> %d cached chunks per reader (%d MB in total)\n",
-		       available_kb/1024, nbuf, (int)(nbuf*6.75*patches_in_flight));
+		       available_kb/1024, nbuf, (int)(nbuf*(ZARR_CHUNK_BYTES/1048576.0)*patches_in_flight));
 	}
 
 	for(int i = 0; i<patches_in_flight; i++)

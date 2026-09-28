@@ -1,17 +1,32 @@
 #pragma once
 #include <blosc2.h>
+/* The chunk side of the surface field. It is 192 in the array the chain has always read; the
+   build can be pointed at a copy with smaller chunks, which changes how much a first touch has to
+   decode and how often a 9-voxel cube straddles a boundary. Compile with -DZARR_CS=64 and set
+   SIMPAPER_SURFACE_ZARR to an array written with that chunk size. Values do not change: the same
+   voxel is read from the same field, only the packaging differs. */
+#ifndef ZARR_CS
+#define ZARR_CS 192
+#endif
+#define ZARR_CHUNK_BYTES ((size_t)ZARR_CS*ZARR_CS*ZARR_CS)
+/* How many decompressed chunks a reader may hold. With smaller chunks the same working set needs
+   proportionally more of them. */
+#ifndef ZARR_NBUF_MAX
+#define ZARR_NBUF_MAX (192/ZARR_CS*192/ZARR_CS*192/ZARR_CS*80)
+#endif
+
 typedef uint8_t ZARRType_1;
 
 typedef struct {
     int locationRootLength;
     char *location;
   
-    unsigned char compressedData[sizeof(ZARRType_1)*7077888+BLOSC2_MAX_OVERHEAD];
-    ZARRType_1 buffers[80][192][192][192];
-    int bufferIndex[80][3];
-    unsigned char written[80];
-    uint64_t bufferUsed[80];
-    ZARRType_1 (*buffer)[192][192][192];
+    unsigned char compressedData[sizeof(ZARRType_1)*ZARR_CHUNK_BYTES+BLOSC2_MAX_OVERHEAD];
+    ZARRType_1 buffers[ZARR_NBUF_MAX][ZARR_CS][ZARR_CS][ZARR_CS];
+    int bufferIndex[ZARR_NBUF_MAX][3];
+    unsigned char written[ZARR_NBUF_MAX];
+    uint64_t bufferUsed[ZARR_NBUF_MAX];
+    ZARRType_1 (*buffer)[ZARR_CS][ZARR_CS][ZARR_CS];
 
     int index;
   

@@ -8,6 +8,21 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <blosc2.h>
+/* The chunk side of the surface field. It is 192 in the array the chain has always read; the
+   build can be pointed at a copy with smaller chunks, which changes how much a first touch has to
+   decode and how often a 9-voxel cube straddles a boundary. Compile with -DZARR_CS=64 and set
+   SIMPAPER_SURFACE_ZARR to an array written with that chunk size. Values do not change: the same
+   voxel is read from the same field, only the packaging differs. */
+#ifndef ZARR_CS
+#define ZARR_CS 192
+#endif
+#define ZARR_CHUNK_BYTES ((size_t)ZARR_CS*ZARR_CS*ZARR_CS)
+/* How many decompressed chunks a reader may hold. With smaller chunks the same working set needs
+   proportionally more of them. */
+#ifndef ZARR_NBUF_MAX
+#define ZARR_NBUF_MAX (192/ZARR_CS*192/ZARR_CS*192/ZARR_CS*80)
+#endif
+
 #include <omp.h>
 long zarrMissingChunks_1 = 0; // chunks read as zeros because the file was missing
 
@@ -18,12 +33,12 @@ typedef struct {
     int locationRootLength;
     char *location;
   
-    unsigned char compressedData[sizeof(ZARRType_1)*7077888+BLOSC2_MAX_OVERHEAD];
-    ZARRType_1 buffers[80][192][192][192];
-    int bufferIndex[80][3];
-    unsigned char written[80];
-    uint64_t bufferUsed[80];
-    ZARRType_1 (*buffer)[192][192][192];
+    unsigned char compressedData[sizeof(ZARRType_1)*ZARR_CHUNK_BYTES+BLOSC2_MAX_OVERHEAD];
+    ZARRType_1 buffers[ZARR_NBUF_MAX][ZARR_CS][ZARR_CS][ZARR_CS];
+    int bufferIndex[ZARR_NBUF_MAX][3];
+    unsigned char written[ZARR_NBUF_MAX];
+    uint64_t bufferUsed[ZARR_NBUF_MAX];
+    ZARRType_1 (*buffer)[ZARR_CS][ZARR_CS][ZARR_CS];
 
     int index;
   
@@ -56,7 +71,7 @@ typedef struct {
 
    SIMPAPER_SHARED_CHUNKS=0 turns it off and restores the previous behaviour exactly.
    --------------------------------------------------------------------------------------------- */
-#define ZARR_STORE_SLOTS 8192
+#define ZARR_STORE_SLOTS (8192*(192/ZARR_CS)*(192/ZARR_CS)*(192/ZARR_CS))
 typedef struct { unsigned long key; int c[3]; ZARRType_1 *data; } ZarrStoreEntry;
 static ZarrStoreEntry zarrStore[ZARR_STORE_SLOTS];
 static long zarrStoreCount = 0;
@@ -119,7 +134,7 @@ static void zarrStoreDecideCap(void)
 				if (sscanf(line,"MemAvailable: %ld kB",&available_kb)==1) break;
 			fclose(mi);
 		}
-		zarrStoreCap = available_kb > 0 ? (long)((available_kb/1024.0) * 0.25 / 6.75) : 256;
+		zarrStoreCap = available_kb > 0 ? (long)((available_kb/1024.0) * 0.25 / (ZARR_CHUNK_BYTES/1048576.0)) : 256;
 		if (zarrStoreCap > ZARR_STORE_SLOTS/2) zarrStoreCap = ZARR_STORE_SLOTS/2;
 		if (zarrStoreCap < 0) zarrStoreCap = 0;
 		if (e && atoi(e) > 0 && atoi(e) < zarrStoreCap) zarrStoreCap = atoi(e);
@@ -138,7 +153,7 @@ static int zarrStoreTake(ZARR_1 *z, int c[3], ZARRType_1 *dest)
 			long k = zarrStoreSlot(z->rootKey, c);
 			if (k >= 0 && zarrStore[k].data)
 			{
-				memcpy(dest, zarrStore[k].data, sizeof(ZARRType_1)*7077888);
+				memcpy(dest, zarrStore[k].data, sizeof(ZARRType_1)*ZARR_CHUNK_BYTES);
 				zarrStoreHits_1++; got = 1;
 			}
 		}
@@ -155,10 +170,10 @@ static void zarrStoreKeep(ZARR_1 *z, int c[3], const ZARRType_1 *src)
 			long k = zarrStoreSlot(z->rootKey, c);
 			if (k >= 0 && !zarrStore[k].data)
 			{
-				ZARRType_1 *p = (ZARRType_1 *)malloc(sizeof(ZARRType_1)*7077888);
+				ZARRType_1 *p = (ZARRType_1 *)malloc(sizeof(ZARRType_1)*ZARR_CHUNK_BYTES);
 				if (p)
 				{
-					memcpy(p, src, sizeof(ZARRType_1)*7077888);
+					memcpy(p, src, sizeof(ZARRType_1)*ZARR_CHUNK_BYTES);
 					zarrStore[k].key = z->rootKey;
 					zarrStore[k].c[0]=c[0]; zarrStore[k].c[1]=c[1]; zarrStore[k].c[2]=c[2];
 					zarrStore[k].data = p;
@@ -187,9 +202,9 @@ ZARR_1 *ZARROpen_1(const char *location)
 	// decompressed 192^3 chunk, that is 6.75 MiB.
 	{
 		const char *e = getenv("ZARR_BUFFERS");
-		int n = e ? atoi(e) : 80;
+		int n = e ? atoi(e) : ZARR_NBUF_MAX;
 		if (n < 1) n = 1;
-		if (n > 80) n = 80;
+		if (n > ZARR_NBUF_MAX) n = ZARR_NBUF_MAX;
 		z->nbuf = n;
 	}
 
@@ -217,7 +232,7 @@ int ZARRFlushOne_1(ZARR_1 *z, int i)
       sprintf(z->location+z->locationRootLength,"/%d/%d/%d",z->bufferIndex[i][0],z->bufferIndex[i][1],z->bufferIndex[i][2]);
 
       blosc1_set_compressor("zstd");
-	  int compressed_len = blosc2_compress(1,1,sizeof(ZARRType_1),z->buffers[i],sizeof(ZARRType_1)*7077888,z->compressedData,sizeof(ZARRType_1)*7077888+BLOSC2_MAX_OVERHEAD);
+	  int compressed_len = blosc2_compress(1,1,sizeof(ZARRType_1),z->buffers[i],sizeof(ZARRType_1)*ZARR_CHUNK_BYTES,z->compressedData,sizeof(ZARRType_1)*ZARR_CHUNK_BYTES+BLOSC2_MAX_OVERHEAD);
 
       if (compressed_len <= 0) {
         return -1;
@@ -321,7 +336,7 @@ int ZARRCheckChunk_1(ZARR_1 *z, int c[3])
 			if (ml) { fprintf(ml,"%s\n",z->location); fclose(ml); }
 		}
 
-		memset(z->buffer,0,sizeof(ZARRType_1)*7077888);
+		memset(z->buffer,0,sizeof(ZARRType_1)*ZARR_CHUNK_BYTES);
 
 		//No need to count it as written to yet - if it remains empty then just leave the file as non-existent
 	    //z->written[z->index] = 1;
@@ -339,7 +354,7 @@ int ZARRCheckChunk_1(ZARR_1 *z, int c[3])
 		
 
         blosc1_set_compressor("zstd");
-        int decompressed_size = blosc2_decompress(z->compressedData, fsize, z->buffer, sizeof(ZARRType_1)*7077888);
+        int decompressed_size = blosc2_decompress(z->compressedData, fsize, z->buffer, sizeof(ZARRType_1)*ZARR_CHUNK_BYTES);
         if (decompressed_size < 0) {
             return 0;
         }
@@ -351,9 +366,9 @@ int ZARRCheckChunk_1(ZARR_1 *z, int c[3])
 }
 ZARRType_1 ZARRReadRO_1(const ZARR_1 *za,int x0,int x1,int x2,int *found,int *hint)
 {
-	int c0 = x0/192, m0 = x0%192;
-	int c1 = x1/192, m1 = x1%192;
-	int c2 = x2/192, m2 = x2%192;
+	int c0 = x0/ZARR_CS, m0 = x0%ZARR_CS;
+	int c1 = x1/ZARR_CS, m1 = x1%ZARR_CS;
+	int c2 = x2/ZARR_CS, m2 = x2%ZARR_CS;
 
 	/* Fast path: the block found last time by THIS caller. The hint lives on the caller's
 	   stack, so it is private per thread while the cache stays shared and immutable. Without
@@ -394,13 +409,13 @@ ZARRType_1 ZARRReadRO_1(const ZARR_1 *za,int x0,int x1,int x2,int *found,int *hi
 int ZARRReadBlock_1(ZARR_1 *za,int x0,int x1,int x2,int n0,int n1,int n2,ZARRType_1 *outBlock)
 {
 	int c[3];
-	c[0] = x0/192; c[1] = x1/192; c[2] = x2/192;
+	c[0] = x0/ZARR_CS; c[1] = x1/ZARR_CS; c[2] = x2/ZARR_CS;
 	/* does the whole block sit inside one chunk? */
-	if ((x0+n0-1)/192 != c[0] || (x1+n1-1)/192 != c[1] || (x2+n2-1)/192 != c[2])
+	if ((x0+n0-1)/ZARR_CS != c[0] || (x1+n1-1)/ZARR_CS != c[1] || (x2+n2-1)/ZARR_CS != c[2])
 		return 0;
 	ZARRCheckChunk_1(za,c);
 	{
-		int m0 = x0%192, m1 = x1%192, m2 = x2%192;
+		int m0 = x0%ZARR_CS, m1 = x1%ZARR_CS, m2 = x2%ZARR_CS;
 		int i,j;
 		for(i = 0; i<n0; i++)
 			for(j = 0; j<n1; j++)
@@ -411,12 +426,12 @@ int ZARRReadBlock_1(ZARR_1 *za,int x0,int x1,int x2,int n0,int n1,int n2,ZARRTyp
 ZARRType_1 ZARRRead_1(ZARR_1 *za,int x0,int x1,int x2)
 {
 	int c[3],m[3];
-    c[0] = x0/192;
-    m[0] = x0%192;
-    c[1] = x1/192;
-    m[1] = x1%192;
-    c[2] = x2/192;
-    m[2] = x2%192;
+    c[0] = x0/ZARR_CS;
+    m[0] = x0%ZARR_CS;
+    c[1] = x1/ZARR_CS;
+    m[1] = x1%ZARR_CS;
+    c[2] = x2/ZARR_CS;
+    m[2] = x2%ZARR_CS;
 	
 	ZARRCheckChunk_1(za,c);
 	
@@ -428,12 +443,12 @@ ZARRType_1 ZARRRead_1(ZARR_1 *za,int x0,int x1,int x2)
 void ZARRReadN_1(ZARR_1 *za,int x0,int x1,int x2,int n,ZARRType_1 *v)
 {
 	int c[3],m[3];
-    c[0] = x0/192;
-    m[0] = x0%192;
-    c[1] = x1/192;
-    m[1] = x1%192;
-    c[2] = x2/192;
-    m[2] = x2%192;
+    c[0] = x0/ZARR_CS;
+    m[0] = x0%ZARR_CS;
+    c[1] = x1/ZARR_CS;
+    m[1] = x1%ZARR_CS;
+    c[2] = x2/ZARR_CS;
+    m[2] = x2%ZARR_CS;
 	
 	ZARRCheckChunk_1(za,c);
 			  
@@ -443,12 +458,12 @@ void ZARRReadN_1(ZARR_1 *za,int x0,int x1,int x2,int n,ZARRType_1 *v)
 int ZARRWrite_1(ZARR_1 *za,int x0,int x1,int x2,ZARRType_1 value)
 {
 	int c[3],m[3];
-    c[0] = x0/192;
-    m[0] = x0%192;
-    c[1] = x1/192;
-    m[1] = x1%192;
-    c[2] = x2/192;
-    m[2] = x2%192;
+    c[0] = x0/ZARR_CS;
+    m[0] = x0%ZARR_CS;
+    c[1] = x1/ZARR_CS;
+    m[1] = x1%ZARR_CS;
+    c[2] = x2/ZARR_CS;
+    m[2] = x2%ZARR_CS;
 	
 	ZARRCheckChunk_1(za,c);
 			  
@@ -463,12 +478,12 @@ int ZARRWrite_1(ZARR_1 *za,int x0,int x1,int x2,ZARRType_1 value)
 void ZARRWriteN_1(ZARR_1 *za,int x0,int x1,int x2,int n, ZARRType_1 *v)
 {
 	int c[3],m[3];
-    c[0] = x0/192;
-    m[0] = x0%192;
-    c[1] = x1/192;
-    m[1] = x1%192;
-    c[2] = x2/192;
-    m[2] = x2%192;
+    c[0] = x0/ZARR_CS;
+    m[0] = x0%ZARR_CS;
+    c[1] = x1/ZARR_CS;
+    m[1] = x1%ZARR_CS;
+    c[2] = x2/ZARR_CS;
+    m[2] = x2%ZARR_CS;
 	
 	ZARRCheckChunk_1(za,c);
 			  
@@ -481,9 +496,9 @@ void ZARRWriteN_1(ZARR_1 *za,int x0,int x1,int x2,int n, ZARRType_1 *v)
 void ZARRNoCheckWriteN_1(ZARR_1 *za,int x0,int x1,int x2,int n, ZARRType_1 *v)
 {
 	int m[3];
-    m[0] = x0%192;
-    m[1] = x1%192;
-    m[2] = x2%192;
+    m[0] = x0%ZARR_CS;
+    m[1] = x1%ZARR_CS;
+    m[2] = x2%ZARR_CS;
 	
 	memcpy(&(*za->buffer)[m[0]][m[1]][m[2]],v,n*sizeof(ZARRType_1));
 
