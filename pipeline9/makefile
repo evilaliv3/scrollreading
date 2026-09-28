@@ -121,3 +121,7 @@ vectorfieldtest.o: vectorfieldtest.cpp calcvectorfield.h zarr_c64i1b256.h
 # bin2tifxyz had no rule: make's implicit rule does not link libtiff (rule added 2026-09-12)
 bin2tifxyz: bin2tifxyz.cpp
 	$(CXX) $(CFLAGS) -o bin2tifxyz bin2tifxyz.cpp $(LFLAGS)
+
+# the bit test of the AVX-512 kernels against the scalar code of the same build (needs AVX-512F to run)
+kernel_test: kernel_test.cpp patch_generator.o calcvectorfield.o common_types.o zarr_1.o zarr_1_b700.o
+	$(CC) -o $@ $^ $(CFLAGS) $(LFLAGS)

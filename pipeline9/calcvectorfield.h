@@ -37,6 +37,16 @@ class VectorFieldCalculator
 		void ComputeFieldDense(int x, int y, int z, Vec3 &v,
 		                       const unsigned char *dense, int oz, int oy, int ox,
 		                       int nz, int ny, int nx);
+		// ComputeFieldDense for up to 16 taps at once, one AVX-512 lane per tap: lane l computes
+		// value[idx[l]] from (cx,cy,cz)[idx[l]] with ComputeFieldDense's operations in its order,
+		// the early break of each lane kept by a mask. A lane that the scalar code leaves
+		// unassigned keeps the value it held. 'dense' must have 3 readable bytes past its end
+		// (the byte gathers read a 32 bit word). Called only when the CPU has AVX-512F.
+		void ComputeFieldDense16(const int *cx, const int *cy, const int *cz, Vec3 *value,
+		                         const int *idx, int n,
+		                         const unsigned char *dense, int oz, int oy, int ox,
+		                         int nz, int ny, int nx);
+		static bool HaveAvx512(void);
 
         void GetSmoothedVectorField(int x, int y, int z, Vec3 &v);
 		void GetSmoothedVectorFieldInt8(int x, int y, int z, Vec3 &v);

@@ -37,6 +37,12 @@ class PatchGenerator
 		// The two loop bodies, pulled out so that there is one copy of each instead of two kept
 		// in step by hand.
 		void ForcesOnPoint(int ai, float &maxForce);
+		// The same body for up to 16 consecutive entries of activeList at once, one AVX-512 lane
+		// per point, each lane doing ForcesOnPoint's operations in ForcesOnPoint's order. The
+		// running maximum is folded lane by lane in ai order with the same std::max. Called only
+		// when the CPU has AVX-512F; ForcesOnPoints below picks.
+		void ForcesOnPoint16(int ai0, int n, float &maxForce);
+		void ForcesOnPoints(int lo, int hi, float &maxForce);
 		void MovePoint(int ai);
 		float ForcesAndMove(void);
 		// The relaxation loop. Returns the number of iterations performed, like the loop it

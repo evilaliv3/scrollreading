@@ -223,8 +223,7 @@ void ForcePool::body(int w, int ph)
 	if (ph == 0)
 	{
 		float mx = 0.0f;
-		for(int ai = lo; ai < hi; ai++)
-			owner->ForcesOnPoint(ai, mx);
+		owner->ForcesOnPoints(lo, hi, mx);
 		partMax[w] = mx;
 	}
 	else
@@ -489,6 +488,105 @@ void PatchGenerator::ForcesOnPoint(int ai, float &maxForce)
 	velSheet[x][y] += acc;
 }
 
+// ForcesOnPoint for the entries ai0 .. ai0+n-1 of activeList (1 <= n <= 16), one AVX-512 lane per
+// point, structure of arrays built by gathers from the sheets, the tail by the mask 'all'.
+// Each lane does ForcesOnPoint's operations in its order:
+//   acc = vfSheet, posxy = pos; for the eight neighbours in FORCES_INNERLOOP's order, where the
+//   neighbour is active: direction = posxy - pos(n); d = sqrt((dx*dx + dy*dy) + dz*dz);
+//   direction /= d (three divisions); force = expected - d; acc += direction*force;
+//   then acc *= (float)SPRING_FORCE_CONSTANT; forceMag = (ax*ax + ay*ay) + az*az;
+//   vel = vel*(float)FRICTION_CONSTANT, then vel += acc.
+// The maximum is folded lane by lane, in ai order, with the same std::max as the scalar loop, so
+// even a NaN goes the way it goes there. Points are distinct cells, so the scatters never collide,
+// and like the scalar body this reads only positions and writes only its own velocities.
+// The file is compiled with -ffp-contract=off: no multiply and add here is fused.
+static_assert(sizeof(paperPoint) == 3*sizeof(float), "paperPoint is gathered as three floats");
+static_assert(sizeof(Vec3) == 3*sizeof(float), "Vec3 is gathered as three floats");
+
+__attribute__((target("avx512f")))
+void PatchGenerator::ForcesOnPoint16(int ai0, int n, float &maxForce)
+{
+	const __mmask16 all = (__mmask16)((1u << n) - 1u);
+	const __m512i zi = _mm512_setzero_si512();
+	const __m512 zf = _mm512_setzero_ps();
+	const __m512i one = _mm512_set1_epi32(1), two = _mm512_set1_epi32(2), three = _mm512_set1_epi32(3);
+	const __m512i lane2 = _mm512_setr_epi32(0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30);
+
+	const int *al = &activeList[ai0][0];
+	__m512i X = _mm512_mask_i32gather_epi32(zi, all, lane2, al, 4);
+	__m512i Y = _mm512_mask_i32gather_epi32(zi, all, _mm512_add_epi32(lane2, one), al, 4);
+	__m512i C = _mm512_add_epi32(_mm512_mullo_epi32(X, _mm512_set1_epi32(SHEET_SIZE)), Y);   // cell x*S+y
+	__m512i C3 = _mm512_mullo_epi32(C, three);
+
+	const float *P = &paperSheet[0][0].pos.x;
+	const float *VF = &vfSheet[0][0].x;
+	float *V = &velSheet[0][0].x;
+	const int *ACT = (const int *)&active[0][0];
+
+	__m512 ax = _mm512_mask_i32gather_ps(zf, all, C3, VF, 4);
+	__m512 ay = _mm512_mask_i32gather_ps(zf, all, _mm512_add_epi32(C3, one), VF, 4);
+	__m512 az = _mm512_mask_i32gather_ps(zf, all, _mm512_add_epi32(C3, two), VF, 4);
+	const __m512 px = _mm512_mask_i32gather_ps(zf, all, C3, P, 4);
+	const __m512 py = _mm512_mask_i32gather_ps(zf, all, _mm512_add_epi32(C3, one), P, 4);
+	const __m512 pz = _mm512_mask_i32gather_ps(zf, all, _mm512_add_epi32(C3, two), P, 4);
+
+	static const int nb[8][2] = {{-1,-1},{-1,0},{-1,1},{0,-1},{0,1},{1,-1},{1,0},{1,1}};
+	for(int k = 0; k<8; k++)
+	{
+		const int xd = nb[k][0], yd = nb[k][1];
+		__m512i CN = _mm512_add_epi32(C, _mm512_set1_epi32(xd*SHEET_SIZE+yd));
+		// active[x+xd][y+yd], a bool, read as the low byte of a 32 bit gather
+		__m512i a = _mm512_and_si512(_mm512_mask_i32gather_epi32(zi, all, CN, ACT, 1), _mm512_set1_epi32(0xFF));
+		__mmask16 na = _mm512_mask_cmpneq_epi32_mask(all, a, zi);
+		if (!na) continue;
+		__m512i CN3 = _mm512_mullo_epi32(CN, three);
+		__m512 nx = _mm512_mask_i32gather_ps(zf, na, CN3, P, 4);
+		__m512 ny = _mm512_mask_i32gather_ps(zf, na, _mm512_add_epi32(CN3, one), P, 4);
+		__m512 nz = _mm512_mask_i32gather_ps(zf, na, _mm512_add_epi32(CN3, two), P, 4);
+		__m512 dx = _mm512_sub_ps(px, nx), dy = _mm512_sub_ps(py, ny), dz = _mm512_sub_ps(pz, nz);
+		__m512 d2 = _mm512_add_ps(_mm512_add_ps(_mm512_mul_ps(dx, dx), _mm512_mul_ps(dy, dy)), _mm512_mul_ps(dz, dz));
+		__m512 d = _mm512_sqrt_ps(d2);
+		dx = _mm512_div_ps(dx, d); dy = _mm512_div_ps(dy, d); dz = _mm512_div_ps(dz, d);
+		__m512 f = _mm512_sub_ps(_mm512_set1_ps(expectedDistanceLookup[xd+1][yd+1]), d);
+		ax = _mm512_mask_add_ps(ax, na, ax, _mm512_mul_ps(dx, f));
+		ay = _mm512_mask_add_ps(ay, na, ay, _mm512_mul_ps(dy, f));
+		az = _mm512_mask_add_ps(az, na, az, _mm512_mul_ps(dz, f));
+	}
+
+	const __m512 spring = _mm512_set1_ps((float)SPRING_FORCE_CONSTANT);
+	ax = _mm512_mul_ps(ax, spring); ay = _mm512_mul_ps(ay, spring); az = _mm512_mul_ps(az, spring);
+
+	alignas(64) float fm[16];
+	_mm512_store_ps(fm, _mm512_add_ps(_mm512_add_ps(_mm512_mul_ps(ax, ax), _mm512_mul_ps(ay, ay)), _mm512_mul_ps(az, az)));
+	for(int l = 0; l<n; l++)
+		maxForce = std::max(fm[l], maxForce);
+
+	const __m512 fric = _mm512_set1_ps((float)FRICTION_CONSTANT);
+	__m512 vx = _mm512_mask_i32gather_ps(zf, all, C3, V, 4);
+	__m512 vy = _mm512_mask_i32gather_ps(zf, all, _mm512_add_epi32(C3, one), V, 4);
+	__m512 vz = _mm512_mask_i32gather_ps(zf, all, _mm512_add_epi32(C3, two), V, 4);
+	vx = _mm512_add_ps(_mm512_mul_ps(vx, fric), ax);
+	vy = _mm512_add_ps(_mm512_mul_ps(vy, fric), ay);
+	vz = _mm512_add_ps(_mm512_mul_ps(vz, fric), az);
+	_mm512_mask_i32scatter_ps(V, all, C3, vx, 4);
+	_mm512_mask_i32scatter_ps(V, all, _mm512_add_epi32(C3, one), vy, 4);
+	_mm512_mask_i32scatter_ps(V, all, _mm512_add_epi32(C3, two), vz, 4);
+}
+
+// The forces of activeList[lo..hi), in ai order: sixteen at a time when the CPU has AVX-512F,
+// else the scalar body one point at a time.
+void PatchGenerator::ForcesOnPoints(int lo, int hi, float &maxForce)
+{
+	if (VectorFieldCalculator::HaveAvx512())
+	{
+		for(int ai = lo; ai < hi; ai += 16)
+			ForcesOnPoint16(ai, hi-ai < 16 ? hi-ai : 16, maxForce);
+	}
+	else
+		for(int ai = lo; ai < hi; ai++)
+			ForcesOnPoint(ai, maxForce);
+}
+
 // Moves one point and records whether it crossed a voxel boundary. SetVectorField is NOT called
 // here: it writes to the shared map vectorFieldLookup and stays in a serial pass.
 void PatchGenerator::MovePoint(int ai)
@@ -521,8 +619,7 @@ float PatchGenerator::ForcesAndMove(void)
   else
   {
     mine().n_relax_ser++;
-    for(int ai = 0; ai<activeListSize; ai++)
-      ForcesOnPoint(ai,largestForce);
+    ForcesOnPoints(0, activeListSize, largestForce);
 
     for(int ai = 0; ai<activeListSize; ai++)
       MovePoint(ai);
