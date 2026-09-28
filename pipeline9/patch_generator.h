@@ -100,9 +100,17 @@ class PatchGenerator
 		// Here the same information lives in pages allocated on demand. Memory becomes
 		// proportional to what is actually touched, and the code stays valid for any volume,
 		// with no constant tied to a particular scroll or a particular box.
-		#define STRESS_NX (VOL_SIZE_X/STRESS_BLOCK_SIZE)
-		#define STRESS_NY (VOL_SIZE_Y/STRESS_BLOCK_SIZE)
-		#define STRESS_NZ (VOL_SIZE_Z/STRESS_BLOCK_SIZE)
+		// Rounded up, not down. No scroll of the twenty three has a side that is a multiple
+		// of 16, so truncating leaves the last block along each axis with no cell: on this
+		// volume z 20960 to 20973, and y and x 6608 to 6620, fall outside the table.
+		// Upstream indexes that block anyway and writes past the end of a member array, which
+		// corrupts whatever follows it in the object rather than faulting. The paged table
+		// this series uses refuses the index instead, so nothing is corrupted, but the stress
+		// of that outer shell is silently dropped and the growth there is guided by a table
+		// that is always false. Rounding up covers the volume and moves no existing index.
+		#define STRESS_NX ((VOL_SIZE_X+STRESS_BLOCK_SIZE-1)/STRESS_BLOCK_SIZE)
+		#define STRESS_NY ((VOL_SIZE_Y+STRESS_BLOCK_SIZE-1)/STRESS_BLOCK_SIZE)
+		#define STRESS_NZ ((VOL_SIZE_Z+STRESS_BLOCK_SIZE-1)/STRESS_BLOCK_SIZE)
 		#define STRESS_PAGE 32                      // blocks per side: 32^3 = 32 KiB per page
 		#define STRESS_PX ((STRESS_NX+STRESS_PAGE-1)/STRESS_PAGE)
 		#define STRESS_PY ((STRESS_NY+STRESS_PAGE-1)/STRESS_PAGE)

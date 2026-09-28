@@ -676,9 +676,12 @@ bool PatchGenerator::MarkHighStress(void)
 		int yb = (int)((paperSheet[x][y].pos.y-VOL_OFFSET_Y)/STRESS_BLOCK_SIZE);
 		int zb = (int)((paperSheet[x][y].pos.z-VOL_OFFSET_Z)/STRESS_BLOCK_SIZE);
 		
-		for(int xo = xb-(xb>0); xo <= xb+(xb+1<VOL_SIZE_X/STRESS_BLOCK_SIZE); xo++)
-		for(int yo = yb-(yb>0); yo <= yb+(yb+1<VOL_SIZE_Y/STRESS_BLOCK_SIZE); yo++)
-		for(int zo = zb-(zb>0); zo <= zb+(zb+1<VOL_SIZE_Z/STRESS_BLOCK_SIZE); zo++)
+		// The same count the table is sized with, so that the neighbour of a block can be the
+		// last one along an axis. Spelled VOL_SIZE_X/STRESS_BLOCK_SIZE here, this loop stopped
+		// one block short of the table even after the table was made to cover the volume.
+		for(int xo = xb-(xb>0); xo <= xb+(xb+1<STRESS_NX); xo++)
+		for(int yo = yb-(yb>0); yo <= yb+(yb+1<STRESS_NY); yo++)
+		for(int zo = zb-(zb>0); zo <= zb+(zb+1<STRESS_NZ); zo++)
  		{
 			unsigned char *pg = StressPage(zo,yo,xo,true);
 			if (pg)
