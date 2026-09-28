@@ -36,10 +36,17 @@ static PatchCounters counters[COUNTERS_MAX] = {};
 static inline PatchCounters &mine() { return counters[omp_get_thread_num() & (COUNTERS_MAX-1)]; }
 long n_hit = 0, n_miss = 0;   // these two are used by calcvectorfield.cpp as well
 
+#ifndef GROWTH_TIMERS
+#define GROWTH_TIMERS 0
+#endif
 static inline double now(void)
 {
+#if GROWTH_TIMERS
 	struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
 	return t.tv_sec + t.tv_nsec*1e-9;
+#else
+	return 0.0;
+#endif
 }
 extern "C" long zarrStoreHits_1, zarrStoreInPlace_1, zarrStoreMisses_1, zarrStoreHeld_1, zarrStoreInPlace_1;
 
