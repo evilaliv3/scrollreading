@@ -91,6 +91,11 @@ class VectorFieldCalculator
 			FieldCache &operator=(const FieldCache &) = delete;
 			const Vec3 *find(uint64_t k) const;
 			void insert(uint64_t k, const Vec3 &v);
+			// The probe kept, so a lookup that misses and the insert that follows it walk the
+			// table once between them. reserveFor() before the probes keeps the table still.
+			const Vec3 *findWithSlot(uint64_t k, size_t &slot) const;
+			void insertAt(size_t slot, uint64_t k, const Vec3 &v);
+			void reserveFor(size_t extra);
 			size_t size() const { return used; }
 			void clear();
 		};

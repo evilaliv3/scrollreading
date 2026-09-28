@@ -211,6 +211,11 @@ void VectorFieldCalculator::GetSmoothedVectorField(int x, int y, int z, Vec3 &v)
 	float weight[N];
 	Vec3 value[N];
 	bool missing[N];
+	size_t slot[N];
+
+	// Room for the worst case before any probe, so that no rehash can happen between a probe and
+	// the insert that uses it.
+	vectorFieldLookup.reserveFor(N);
 
 	int k = 0;
 	for(int zo = z-SMOOTH_WINDOW; zo<=z+SMOOTH_WINDOW; zo++)
@@ -236,7 +241,7 @@ void VectorFieldCalculator::GetSmoothedVectorField(int x, int y, int z, Vec3 &v)
 		  // restructuring it no longer goes through GetVectorField, and leaving it there made
 		  // the code report zero hits, which is a false diagnostic.
 		  extern long n_hit;
-		  const Vec3 *tr = vectorFieldLookup.find(key[k]);
+		  const Vec3 *tr = vectorFieldLookup.findWithSlot(key[k], slot[k]);
 		  if (tr) { n_hit++; value[k] = *tr; missing[k] = false; }
 		  else missing[k] = true;
 		  k++;
@@ -283,7 +288,7 @@ void VectorFieldCalculator::GetSmoothedVectorField(int x, int y, int z, Vec3 &v)
 			}
 		}
 		extern long n_miss;
-		for(int j = 0; j<nToDo; j++) { n_miss++; vectorFieldLookup.insert(key[toDo[j]],value[toDo[j]]); }
+		for(int j = 0; j<nToDo; j++) { n_miss++; vectorFieldLookup.insertAt(slot[toDo[j]],key[toDo[j]],value[toDo[j]]); }
 	}
 
 	// Weighted sum in the original order: left untouched, because floating-point addition is
@@ -461,6 +466,38 @@ const Vec3 *VectorFieldCalculator::FieldCache::find(uint64_t k) const
 		i = (i+1) & mask;
 	}
 	return NULL;
+}
+
+const Vec3 *VectorFieldCalculator::FieldCache::findWithSlot(uint64_t k, size_t &slot) const
+{
+	uint64_t bk; unsigned off;
+	split(k, bk, off);
+	size_t i = (size_t)(bk * 0x9E3779B97F4A7C15ull >> 32) & mask;
+	while (tab[i].k)
+	{
+		if (tab[i].k == bk) { slot = i; return (tab[i].valid >> off) & 1ull ? &tab[i].v[off] : NULL; }
+		i = (i+1) & mask;
+	}
+	slot = i;
+	return NULL;
+}
+
+void VectorFieldCalculator::FieldCache::insertAt(size_t slot, uint64_t k, const Vec3 &v)
+{
+	uint64_t bk; unsigned off;
+	split(k, bk, off);
+	size_t i = slot;
+	while (tab[i].k)
+	{
+		if (tab[i].k == bk) { tab[i].v[off] = v; tab[i].valid |= 1ull << off; return; }
+		i = (i+1) & mask;
+	}
+	tab[i].k = bk; tab[i].v[off] = v; tab[i].valid = 1ull << off; used++;
+}
+
+void VectorFieldCalculator::FieldCache::reserveFor(size_t extra)
+{
+	while ((used+extra)*10 >= cap*7) grow();
 }
 
 void VectorFieldCalculator::FieldCache::insert(uint64_t k, const Vec3 &v)
