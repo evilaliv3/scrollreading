@@ -359,27 +359,96 @@ void VectorFieldCalculator::ComputeFieldDense(int x, int y, int z, Vec3 &v,
 
 // Flat table, open addressing, linear probing.
 // Key 0 cannot occur, because the coordinates are positive, so it serves as the empty marker.
+//
+// The memory comes from posix_memalign on a 2 MiB boundary and is offered to the kernel as a huge
+// page. Transparent huge pages are in "madvise" mode on this machine, so without the advice the
+// table is paged in 4 KiB pieces and every probe that misses the TLB walks the page tables.
+// A zeroed slot is an empty slot: the key is 0 and Vec3's default constructor zeroes its three
+// floats, so zeroed memory is exactly what assign(FieldSlot{0,Vec3()}) produced.
+#include <sys/mman.h>
+#include <cstdlib>
+#include <cstring>
+
+static int fieldCacheHugePages(void)
+{
+	static int decided = -1;
+	if (decided < 0)
+	{
+		const char *e = getenv("SIMPAPER_HUGE_PAGES");
+		decided = (e && atoi(e) == 0) ? 0 : 1;
+	}
+	return decided;
+}
+
+VectorFieldCalculator::FieldSlot *VectorFieldCalculator::FieldCache::allocSlots(size_t n)
+{
+	size_t bytes = n * sizeof(FieldSlot);
+	void *p = NULL;
+	const size_t HUGE = 2u*1024u*1024u;
+	if (fieldCacheHugePages() && bytes >= HUGE)
+	{
+		size_t rounded = ((bytes + HUGE - 1) / HUGE) * HUGE;
+		if (posix_memalign(&p, HUGE, rounded) != 0) p = NULL;
+		if (p)
+		{
+			madvise(p, rounded, MADV_HUGEPAGE);
+			memset(p, 0, rounded);
+			return (FieldSlot *)p;
+		}
+	}
+	p = calloc(n, sizeof(FieldSlot));
+	if (!p) { fprintf(stderr,"FieldCache: out of memory for %zu slots\n", n); exit(5); }
+	return (FieldSlot *)p;
+}
+
+void VectorFieldCalculator::FieldCache::freeSlots(FieldSlot *p, size_t)
+{
+	free(p);
+}
+
 VectorFieldCalculator::FieldCache::FieldCache()
 {
-	tab.assign(1024, FieldSlot{0,Vec3()});
-	mask = 1023;
+	cap = 1024;
+	tab = allocSlots(cap);
+	mask = cap - 1;
+	used = 0;
+}
+
+VectorFieldCalculator::FieldCache::~FieldCache()
+{
+	freeSlots(tab, cap);
+	tab = nullptr;
+}
+
+void VectorFieldCalculator::FieldCache::clear()
+{
+	freeSlots(tab, cap);
+	cap = 1024;
+	tab = allocSlots(cap);
+	mask = cap - 1;
 	used = 0;
 }
 
 void VectorFieldCalculator::FieldCache::grow()
 {
-	std::vector<FieldSlot> old;
-	old.swap(tab);
-	size_t fresh = (old.size() ? old.size() : 1024) * 2;
-	tab.assign(fresh, FieldSlot{0,Vec3()});
-	mask = fresh - 1;
-	for(const FieldSlot &s : old)
+	FieldSlot *old = tab;
+	size_t oldCap = cap;
+	cap = (oldCap ? oldCap : 1024) * 2;
+	tab = allocSlots(cap);
+	mask = cap - 1;
+	// Same order as before: the old table is walked from slot 0 upwards, so two entries that
+	// collide in the new table land in the same relative order they did with std::vector.
+	for(size_t j = 0; j < oldCap; j++)
+	{
+		const FieldSlot &s = old[j];
 		if (s.k)
 		{
 			size_t i = (size_t)(s.k * 0x9E3779B97F4A7C15ull >> 32) & mask;
 			while (tab[i].k) i = (i+1) & mask;
 			tab[i] = s;
 		}
+	}
+	freeSlots(old, oldCap);
 }
 
 const Vec3 *VectorFieldCalculator::FieldCache::find(uint64_t k) const
@@ -395,7 +464,7 @@ const Vec3 *VectorFieldCalculator::FieldCache::find(uint64_t k) const
 
 void VectorFieldCalculator::FieldCache::insert(uint64_t k, const Vec3 &v)
 {
-	if ((used+1)*10 >= tab.size()*7) grow();
+	if ((used+1)*10 >= cap*7) grow();
 	size_t i = (size_t)(k * 0x9E3779B97F4A7C15ull >> 32) & mask;
 	while (tab[i].k)
 	{

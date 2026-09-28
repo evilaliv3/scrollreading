@@ -53,17 +53,29 @@ class VectorFieldCalculator
 		// Dense paging by coordinate would be worse: the voxels touched form a surface, not a
 		// solid volume, so nine pages out of ten would stay empty.
 		struct FieldSlot { uint64_t k; Vec3 v; };
+		// The table is allocated by hand rather than by std::vector for one reason: so that it
+		// can be asked for huge pages. The run walks it about two hundred million times at
+		// addresses that have no locality, and the dTLB profile of the production build puts
+		// 87 % of its load misses in this table and in the routine that reads it. A 2 MiB page
+		// covers 512 times what a 4 KiB page covers, and nothing else about the table changes:
+		// same size, same hash, same probe order, same values, only the addresses differ.
+		// SIMPAPER_HUGE_PAGES=0 asks for ordinary pages instead.
 		class FieldCache
 		{
-			std::vector<FieldSlot> tab;
-			size_t mask = 0, used = 0;
+			FieldSlot *tab = nullptr;
+			size_t cap = 0, mask = 0, used = 0;
 			void grow();
+			static FieldSlot *allocSlots(size_t n);
+			static void freeSlots(FieldSlot *p, size_t n);
 		public:
 			FieldCache();
+			~FieldCache();
+			FieldCache(const FieldCache &) = delete;
+			FieldCache &operator=(const FieldCache &) = delete;
 			const Vec3 *find(uint64_t k) const;
 			void insert(uint64_t k, const Vec3 &v);
 			size_t size() const { return used; }
-			void clear() { tab.assign(1024, FieldSlot{0,Vec3()}); mask = 1023; used = 0; }
+			void clear();
 		};
 		FieldCache vectorFieldLookup;
 
