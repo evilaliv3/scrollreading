@@ -784,14 +784,14 @@ int main(int argc, char *argv[])
 		delete bpf;
 
 		{
-			std::ofstream os(outPath("/badpatches.csv"));
+			std::ofstream os(OUTPUT_DIR "/badpatches.csv");
 			for(auto i : badPatches)
 			{
 				os << i << std::endl;;
 			}
 		}
 		{
-			std::ofstream os(outPath("/badpatchscores.csv"));
+			std::ofstream os(OUTPUT_DIR "/badpatchscores.csv");
 			for(auto i : badPatchScores)
 			{
 				os << std::get<0>(i) << "," << std::get<1>(i) << "," << std::get<2>(i) << std::endl;;
