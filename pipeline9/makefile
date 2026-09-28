@@ -86,10 +86,10 @@ patch_generator.o: patch_generator.cpp patch_generator.h parameters.h common_typ
 simpaper10.o: simpaper10.cpp badpatchfinder.h erasepoints.h align_patches.h patch_generator.h sliceanimrender.h patchcolourkey.h bigpatch.h common_types.h vec3.h parameters.h PatchSpringSimulation.hpp visitorder.h anneal.h omissiontest.h
 	$(CC) -c $< $(CFLAGS)
 	
-align_patches.o : align_patches.cpp align_patches.h bigpatch.h common_types.h parameters.h
+align_patches.o : align_patches.cpp align_patches.h cellgrid.h bigpatch.h common_types.h parameters.h
 	$(CC) -c $< $(CFLAGS)
 
-erasepoints.o : erasepoints.cpp erasepoints.h bigpatch.h common_types.h parameters.h
+erasepoints.o : erasepoints.cpp erasepoints.h cellgrid.h bigpatch.h common_types.h parameters.h
 	$(CC) -c $< $(CFLAGS)
 	
 
