@@ -380,9 +380,9 @@ static int fieldCacheHugePages(void)
 	return decided;
 }
 
-VectorFieldCalculator::FieldSlot *VectorFieldCalculator::FieldCache::allocSlots(size_t n)
+VectorFieldCalculator::FieldBlock *VectorFieldCalculator::FieldCache::allocSlots(size_t n)
 {
-	size_t bytes = n * sizeof(FieldSlot);
+	size_t bytes = n * sizeof(FieldBlock);
 	void *p = NULL;
 	const size_t HUGE = 2u*1024u*1024u;
 	if (fieldCacheHugePages() && bytes >= HUGE)
@@ -393,15 +393,15 @@ VectorFieldCalculator::FieldSlot *VectorFieldCalculator::FieldCache::allocSlots(
 		{
 			madvise(p, rounded, MADV_HUGEPAGE);
 			memset(p, 0, rounded);
-			return (FieldSlot *)p;
+			return (FieldBlock *)p;
 		}
 	}
-	p = calloc(n, sizeof(FieldSlot));
-	if (!p) { fprintf(stderr,"FieldCache: out of memory for %zu slots\n", n); exit(5); }
-	return (FieldSlot *)p;
+	p = calloc(n, sizeof(FieldBlock));
+	if (!p) { fprintf(stderr,"FieldCache: out of memory for %zu blocks\n", n); exit(5); }
+	return (FieldBlock *)p;
 }
 
-void VectorFieldCalculator::FieldCache::freeSlots(FieldSlot *p, size_t)
+void VectorFieldCalculator::FieldCache::freeSlots(FieldBlock *p, size_t)
 {
 	free(p);
 }
@@ -431,16 +431,14 @@ void VectorFieldCalculator::FieldCache::clear()
 
 void VectorFieldCalculator::FieldCache::grow()
 {
-	FieldSlot *old = tab;
+	FieldBlock *old = tab;
 	size_t oldCap = cap;
 	cap = (oldCap ? oldCap : 1024) * 2;
 	tab = allocSlots(cap);
 	mask = cap - 1;
-	// Same order as before: the old table is walked from slot 0 upwards, so two entries that
-	// collide in the new table land in the same relative order they did with std::vector.
 	for(size_t j = 0; j < oldCap; j++)
 	{
-		const FieldSlot &s = old[j];
+		const FieldBlock &s = old[j];
 		if (s.k)
 		{
 			size_t i = (size_t)(s.k * 0x9E3779B97F4A7C15ull >> 32) & mask;
@@ -453,10 +451,13 @@ void VectorFieldCalculator::FieldCache::grow()
 
 const Vec3 *VectorFieldCalculator::FieldCache::find(uint64_t k) const
 {
-	size_t i = (size_t)(k * 0x9E3779B97F4A7C15ull >> 32) & mask;
+	uint64_t bk; unsigned off;
+	split(k, bk, off);
+	size_t i = (size_t)(bk * 0x9E3779B97F4A7C15ull >> 32) & mask;
 	while (tab[i].k)
 	{
-		if (tab[i].k == k) return &tab[i].v;
+		if (tab[i].k == bk)
+			return (tab[i].valid >> off) & 1ull ? &tab[i].v[off] : NULL;
 		i = (i+1) & mask;
 	}
 	return NULL;
@@ -465,11 +466,13 @@ const Vec3 *VectorFieldCalculator::FieldCache::find(uint64_t k) const
 void VectorFieldCalculator::FieldCache::insert(uint64_t k, const Vec3 &v)
 {
 	if ((used+1)*10 >= cap*7) grow();
-	size_t i = (size_t)(k * 0x9E3779B97F4A7C15ull >> 32) & mask;
+	uint64_t bk; unsigned off;
+	split(k, bk, off);
+	size_t i = (size_t)(bk * 0x9E3779B97F4A7C15ull >> 32) & mask;
 	while (tab[i].k)
 	{
-		if (tab[i].k == k) { tab[i].v = v; return; }
+		if (tab[i].k == bk) { tab[i].v[off] = v; tab[i].valid |= 1ull << off; return; }
 		i = (i+1) & mask;
 	}
-	tab[i].k = k; tab[i].v = v; used++;
+	tab[i].k = bk; tab[i].v[off] = v; tab[i].valid = 1ull << off; used++;
 }

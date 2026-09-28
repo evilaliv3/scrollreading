@@ -53,6 +53,15 @@ class VectorFieldCalculator
 		// Dense paging by coordinate would be worse: the voxels touched form a surface, not a
 		// solid volume, so nine pages out of ten would stay empty.
 		struct FieldSlot { uint64_t k; Vec3 v; };
+		// A slot that holds a whole 4x4x4 block of voxels instead of one.
+		// Why: an evaluation of the smoothed field probes the cache 125 times, once per tap of a
+		// 5^3 window, and with one voxel per slot those 125 probes land on 125 unrelated cache
+		// lines. The 125 taps of a window lie in at most 8 blocks of side 4, so with a block per
+		// slot the same 125 probes land in 8 regions of 784 bytes and all but the first few hit
+		// L1. Nothing about what the cache returns changes: the key of a voxel is decomposed into
+		// (block, offset) by a mapping that is one-to-one, so two voxels share an entry exactly
+		// when they shared one before, including the keys the caller packs badly.
+		struct FieldBlock { uint64_t k; uint64_t valid; Vec3 v[64]; };
 		// The table is allocated by hand rather than by std::vector for one reason: so that it
 		// can be asked for huge pages. The run walks it about two hundred million times at
 		// addresses that have no locality, and the dTLB profile of the production build puts
@@ -62,11 +71,19 @@ class VectorFieldCalculator
 		// SIMPAPER_HUGE_PAGES=0 asks for ordinary pages instead.
 		class FieldCache
 		{
-			FieldSlot *tab = nullptr;
+			FieldBlock *tab = nullptr;
 			size_t cap = 0, mask = 0, used = 0;
 			void grow();
-			static FieldSlot *allocSlots(size_t n);
-			static void freeSlots(FieldSlot *p, size_t n);
+			static FieldBlock *allocSlots(size_t n);
+			static void freeSlots(FieldBlock *p, size_t n);
+			// key -> (block key, offset in block). One-to-one, so the equivalence classes of keys
+			// are exactly the ones the flat table had.
+			static inline void split(uint64_t k, uint64_t &bk, unsigned &off)
+			{
+				uint64_t x = k >> 32, y = (k >> 16) & 0xFFFFu, z = k & 0xFFFFu;
+				bk = (((x >> 2) << 32) | ((y >> 2) << 16) | (z >> 2)) + 1;   // +1: 0 marks empty
+				off = (unsigned)(((x & 3) << 4) | ((y & 3) << 2) | (z & 3));
+			}
 		public:
 			FieldCache();
 			~FieldCache();
