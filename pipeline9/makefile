@@ -144,3 +144,7 @@ bin2tifxyz: bin2tifxyz.cpp
 # the bit test of the AVX-512 kernels against the scalar code of the same build (needs AVX-512F to run)
 kernel_test: kernel_test.cpp patch_generator.o calcvectorfield.o common_types.o zarr_1.o zarr_1_b700.o
 	$(CC) -o $@ $^ $(CFLAGS) $(LFLAGS)
+
+# a copy of the surface prediction in LZ4HC, checked chunk by chunk (see the head of recode_zarr_lz4hc.c)
+recode_zarr_lz4hc: recode_zarr_lz4hc.c
+	$(CC) -o $@ $< $(CFLAGS) $(LFLAGS)
